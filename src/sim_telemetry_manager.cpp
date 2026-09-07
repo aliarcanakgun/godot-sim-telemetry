@@ -104,7 +104,7 @@ void SimTelemetryManager::_bind_methods() {
     
     ClassDB::bind_method(D_METHOD("set_zstd_compression_enabled", "enabled"), &SimTelemetryManager::set_zstd_compression_enabled);
     ClassDB::bind_method(D_METHOD("is_zstd_compression_enabled"), &SimTelemetryManager::is_zstd_compression_enabled);
-    ClassDB::bind_method(D_METHOD("is_file_compressed", "file_path"), &SimTelemetryManager::is_file_compressed);
+    ClassDB::bind_method(D_METHOD("get_compression_format", "file_path"), &SimTelemetryManager::get_compression_format);
     ClassDB::bind_method(D_METHOD("zstd_compress_file", "file_path"), &SimTelemetryManager::zstd_compress_file);
     ClassDB::bind_method(D_METHOD("zstd_compress_file_async", "file_path"), &SimTelemetryManager::zstd_compress_file_async);
 
@@ -330,7 +330,7 @@ bool SimTelemetryManager::is_zstd_compression_enabled() const {
     return zstd_compression_enabled;
 }
 
-bool SimTelemetryManager::is_file_compressed(const String& file_path) {
+String SimTelemetryManager::get_compression_format(const String& file_path) {
     String os_path = file_path;
     if (os_path.begins_with("res://") || os_path.begins_with("user://")) {
         os_path = ProjectSettings::get_singleton()->globalize_path(os_path);
@@ -341,9 +341,9 @@ bool SimTelemetryManager::is_file_compressed(const String& file_path) {
         check.seekg(4, std::ios::beg);
         char sig[4];
         check.read(sig, 4);
-        return (std::strncmp(sig, "ZST2", 4) == 0);
+        if (std::strncmp(sig, "ZST2", 4) == 0) return "ZSTD";
     }
-    return false;
+    return "";
 }
 
 bool SimTelemetryManager::zstd_compress_file(const String& file_path) {

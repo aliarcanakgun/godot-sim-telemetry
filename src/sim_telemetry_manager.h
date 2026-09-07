@@ -100,7 +100,7 @@ public:
     void set_zstd_compression_enabled(bool enabled);
     bool is_zstd_compression_enabled() const;
     
-    bool is_file_compressed(const String& file_path);
+    String get_compression_format(const String& file_path);
     bool zstd_compress_file(const String& file_path);
     void zstd_compress_file_async(const String& file_path);
 
