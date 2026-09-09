@@ -62,7 +62,7 @@ private:
     bool zstd_compression_enabled = true;
 
     void logging_loop();
-    String _open_session_file(const String& file_path, TelemetryFile& infile, AC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets);
+    String _open_session_file(const String& file_path, TelemetryFile& infile, AC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp);
     Dictionary _calculate_session_metadata(const AC_SPageStatic& stat, uint64_t count, const std::vector<AC_LapDataChannels>& laps);
     Dictionary _static_to_dict(const AC_SPageStatic &s);
     Dictionary _lap_to_dict(const AC_LapDataChannels& c);

@@ -1,6 +1,7 @@
 #include "acc_provider.h"
 #include "helper.h"
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <cmath>
 #include <algorithm>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -248,6 +249,10 @@ void ACCProvider::_flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_
 
     CharString utf8_signature = save_file_signature.utf8();
     outfile.write(utf8_signature.get_data(), utf8_signature.length());
+    if (outfile.fail()) { outfile.close(); return; }
+
+    int64_t session_timestamp = Time::get_singleton()->get_unix_time_from_system();
+    outfile.write(&session_timestamp, sizeof(int64_t));
     if (outfile.fail()) { outfile.close(); return; }
 
     outfile.write(&static_data_copy, sizeof(ACC_SPageStatic));
@@ -592,7 +597,8 @@ Dictionary ACCProvider::get_session_metadata_from_file(const String& file_path) 
 
     TelemetryFile infile;
     uint64_t count = 0;
-    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets);
+    int64_t dummy_ts = 0;
+    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
     if (!err.is_empty()) return Dictionary();
 
     loaded_session_lap_count = count;
@@ -625,7 +631,9 @@ Dictionary ACCProvider::get_session_metadata_from_file(const String& file_path) 
         loaded_session_data.push_back(lap_data);
     }
     infile.close();
-    return _calculate_session_metadata(loaded_session_static_data, count, loaded_session_data);
+    Dictionary ret = _calculate_session_metadata(loaded_session_static_data, count, loaded_session_data);
+    ret["timestamp"] = dummy_ts;
+    return ret;
 }
 
 Dictionary ACCProvider::get_session_metadata() {
@@ -982,7 +990,7 @@ String ACCProvider::get_internal_channel_name(const String& standard_name) {
     return standard_name; // fallback
 }
 
-String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets) {
+String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp) {
     if (file_path.is_empty()) return "file path is empty";
 
     if (!infile.open_read(file_path)) return "could not open file: " + file_path;
@@ -996,6 +1004,12 @@ String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& i
     if (read_sig != save_file_signature) {
         infile.close();
         return "invalid signature";
+    }
+
+    // read timestamp
+    infile.read(&out_timestamp, sizeof(int64_t));
+    if (infile.fail()) {
+        infile.close(); return "failed reading timestamp";
     }
 
     // read static data
@@ -2327,7 +2341,8 @@ String ACCProvider::load_session(const String& file_path) {
 
     TelemetryFile infile;
     uint64_t count = 0;
-    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets);
+    int64_t dummy_ts;
+    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
     if (!err.is_empty()) return err;
 
     loaded_session_lap_count = count;
@@ -2528,7 +2543,8 @@ Dictionary ACCProvider::calculate_lap_time_delta(const String& target_file_path,
         uint64_t count;
         std::vector<uint64_t> offsets;
 
-        if (!_open_session_file(file_path, infile, stat, interval, spm, count, offsets).is_empty()) {
+        int64_t timestamp = 0;
+        if (!_open_session_file(file_path, infile, stat, interval, spm, count, offsets, timestamp).is_empty()) {
             return false;
         }
 

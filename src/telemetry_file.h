@@ -27,6 +27,7 @@ public:
 
     bool is_open() const { return is_open_flag; }
     bool fail() const { return file_failed; }
+    uint64_t get_size() const { return buffer.size(); }
 
     template<typename T>
     TelemetryFile& write(const T* data, size_t size) {
