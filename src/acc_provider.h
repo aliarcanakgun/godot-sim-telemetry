@@ -60,7 +60,7 @@ private:
     std::thread logging_thread;
     std::mutex data_mutex;
 
-    bool zstd_compression_enabled = true;
+    CompressionMethod compression_method = COMPRESSION_ZSTD;
 
     void logging_loop();
     String _open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp);
@@ -99,8 +99,8 @@ public:
     virtual void set_samples_per_meter(double spm) override { if (!is_logging) samples_per_meter = spm; }
     virtual godot::String get_save_file_signature() const override { return save_file_signature; }
     
-    virtual void set_zstd_compression_enabled(bool enabled) override { zstd_compression_enabled = enabled; }
-    virtual bool is_zstd_compression_enabled() const override { return zstd_compression_enabled; }
+    virtual void set_compression_method(CompressionMethod method) override { compression_method = method; }
+    virtual CompressionMethod get_compression_method() const override { return compression_method; }
 
     virtual godot::String load_session(const godot::String& file_path) override;
     virtual void close_session() override;

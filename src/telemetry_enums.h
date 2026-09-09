@@ -50,3 +50,8 @@ enum DrivingMistakeType {
     MISTAKE_DRIFT = 11,
     MISTAKE_MINOR_OVERSTEER = 12
 };
+
+enum CompressionMethod {
+    COMPRESSION_NONE = 0,
+    COMPRESSION_ZSTD = 1
+};

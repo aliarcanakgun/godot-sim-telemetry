@@ -23,6 +23,7 @@ public:
     
     bool close_and_save(const godot::String& path, bool compress = true);
     static bool compress_existing_file(const godot::String& path);
+    static bool uncompress_existing_file(const godot::String& path);
     void close();
 
     bool is_open() const { return is_open_flag; }

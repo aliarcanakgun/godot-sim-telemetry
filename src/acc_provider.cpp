@@ -276,7 +276,7 @@ void ACCProvider::_flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_
     outfile.seekp(offsets_pos);
     outfile.write(lap_offsets.data(), total_laps * sizeof(uint64_t));
 
-    outfile.close_and_save(os_path, zstd_compression_enabled);
+    outfile.close_and_save(os_path, compression_method == COMPRESSION_ZSTD);
 }
 
 bool ACCProvider::is_logging_active() const {

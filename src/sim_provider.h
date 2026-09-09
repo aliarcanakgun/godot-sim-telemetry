@@ -3,6 +3,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <functional>
+#include "telemetry_enums.h"
 
 namespace godot {
 
@@ -18,8 +19,8 @@ public:
     virtual void set_samples_per_meter(double spm) = 0;
     virtual godot::String get_save_file_signature() const = 0;
     
-    virtual void set_zstd_compression_enabled(bool enabled) = 0;
-    virtual bool is_zstd_compression_enabled() const = 0;
+    virtual void set_compression_method(CompressionMethod method) = 0;
+    virtual CompressionMethod get_compression_method() const = 0;
 
     virtual godot::String connect_provider() = 0;
     virtual void disconnect_provider() = 0;

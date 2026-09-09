@@ -21,7 +21,7 @@ private:
     // properties
     double sample_interval = 0.02;
     double samples_per_meter = 1.0;
-    bool zstd_compression_enabled = true;
+    CompressionMethod default_compression_method = COMPRESSION_ZSTD;
 
     ISimProvider* _get_provider_for_signature(const String& sig);
     ISimProvider* _create_provider(const String& sim_id);
@@ -97,12 +97,14 @@ public:
         return "";
     }
     
-    void set_zstd_compression_enabled(bool enabled);
-    bool is_zstd_compression_enabled() const;
+    void set_default_compression_method(CompressionMethod method);
+    CompressionMethod get_default_compression_method() const;
     
     String get_compression_format(const String& file_path);
-    bool zstd_compress_file(const String& file_path);
-    void zstd_compress_file_async(const String& file_path);
+    bool compress_file(const String& file_path, CompressionMethod method);
+    void compress_file_async(const String& file_path, CompressionMethod method);
+    bool uncompress_file(const String& file_path);
+    void uncompress_file_async(const String& file_path);
 
     // utils
     Vector2 get_array_min_max(const Variant& arr);
@@ -115,3 +117,4 @@ VARIANT_ENUM_CAST(SimStatusType);
 VARIANT_ENUM_CAST(SimSessionType);
 VARIANT_ENUM_CAST(SimFlagType);
 VARIANT_ENUM_CAST(DrivingMistakeType);
+VARIANT_ENUM_CAST(CompressionMethod);

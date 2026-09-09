@@ -153,6 +153,15 @@ bool TelemetryFile::compress_existing_file(const godot::String& path) {
     return file.close_and_save(path, true);
 }
 
+bool TelemetryFile::uncompress_existing_file(const godot::String& path) {
+    TelemetryFile file;
+    if (!file.open_read(path)) return false;
+    
+    file.is_writing = true; // allow close_and_save to work
+    file.is_open_flag = true;
+    return file.close_and_save(path, false);
+}
+
 void TelemetryFile::close() {
     is_open_flag = false;
     buffer.clear();
