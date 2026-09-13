@@ -938,12 +938,21 @@ Dictionary ACProvider::_calculate_session_metadata(const AC_SPageStatic& stat, u
                     total_progression += diff;
                 }
             }
-            if (total_progression > 0.90f) {
-                is_completed = true;
+            if (total_progression > 0.85f) {
+                if (i < count - 1) {
+                    float last_pos = lap.normalizedCarPosition.back();
+                    float next_pos = laps[i + 1].normalizedCarPosition.front();
+                    // check if it wrapped around the finish line
+                    if (last_pos > 0.90f && next_pos < 0.10f) {
+                        is_completed = true;
+                    }
+                } else {
+                    is_completed = false;
+                }
             }
         }
 
-        bool is_valid = true;
+        bool is_valid = is_completed;
         size_t min_size = lap.numberOfTyresOut.size();
         min_size = std::min(min_size, lap.penaltyTime.size());
         min_size = std::min(min_size, lap.flag.size());
