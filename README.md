@@ -69,10 +69,10 @@ func _exit_tree():
 #### `SimTelemetryManager`
 The core node managing simulator connections, data logging, and session handling.
 
-* `connect_to_sim(sim_id: String) -> String`: Establishes a connection to a specific simulator (e.g. `"AC"`, `"ACC"`). Use `detect_active_sim()` first to get the active ID. Returns `""` on success or an error string.
+* `connect_to_sim(sim_id: String) -> String`: Establishes a connection to a specific simulator (e.g. `"AC"`, `"ACC"`). Use `detect_active_sim()` first to get the active ID. Returns empty `String` on success or an error string.
 * `detect_active_sim() -> String`: Checks shared memory signatures to detect which simulator is currently running and returns its ID.
 * `disconnect_from_sim() -> void`: Closes all shared memory connections.
-* `start_logging(output_file_path: String) -> String`: Starts background telemetry logging. `output_file_path` is required as a fallback path in case of crash/disconnect. Returns `""` on success or an error string.
+* `start_logging(output_file_path: String) -> String`: Starts background telemetry logging. `output_file_path` is required as a fallback path in case of crash/disconnect. Returns empty `String` on success or an error string.
 * `finish_logging(output_file_path: String = "") -> String`: Stops logging and saves the telemetry session. If `output_file_path` is left empty, the fallback path provided in `start_logging` is used. Returns the saved file path or an error string.
 * `is_connected_to_sim() -> bool`: Returns whether shared-memory mappings are currently active.
 * `get_current_sim_id() -> String`: Returns the ID of the currently connected simulator (e.g., `"AC"`, `"ACC"`, `"EVO"`).
