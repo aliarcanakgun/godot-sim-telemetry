@@ -20,6 +20,7 @@ private:
     static godot::Array check_snap_oversteer(SimTelemetryManager* sim, const godot::Dictionary& lap);
     static godot::Array check_throttle_flutter(SimTelemetryManager* sim, const godot::Dictionary& lap);
     static godot::Array check_pedal_overlap(SimTelemetryManager* sim, const godot::Dictionary& lap);
+    static godot::Array check_understeer(SimTelemetryManager* sim, const godot::Dictionary& lap);
     static godot::Array check_loss_of_control(SimTelemetryManager* sim, const godot::Dictionary& lap);
 };
 

@@ -23,6 +23,7 @@ godot::Array DrivingAnalyzer::analyze_lap(SimTelemetryManager* sim, const godot:
     append_results(check_snap_oversteer(sim, lap));
     append_results(check_throttle_flutter(sim, lap));
     append_results(check_pedal_overlap(sim, lap));
+    append_results(check_understeer(sim, lap));
     append_results(check_loss_of_control(sim, lap));
 
     for (int i = 0; i < errors.size(); ++i) {
@@ -897,6 +898,105 @@ godot::Array DrivingAnalyzer::check_loss_of_control(SimTelemetryManager* sim, co
     
     if (in_slide) {
         analyze_slide(slide_start_idx, size - 1);
+    }
+
+    return results;
+}
+
+godot::Array DrivingAnalyzer::check_understeer(SimTelemetryManager* sim, const godot::Dictionary& lap) {
+    godot::Array results;
+    
+    String time_ch = sim->get_channel_name("i_current_time");
+    String steer_ch = sim->get_channel_name("steer_angle");
+    String pos_ch = sim->get_channel_name("normalized_car_position");
+    String yaw_ch = sim->get_channel_name("yaw_rate");
+    String speed_ch = sim->get_channel_name("speed");
+
+    if (!lap.has(time_ch) || !lap.has(steer_ch) || !lap.has(pos_ch) || !lap.has(yaw_ch) || !lap.has(speed_ch)) {
+        return results;
+    }
+
+    PackedInt32Array time_data = lap[time_ch];
+    PackedFloat32Array steer_data = lap[steer_ch];
+    PackedFloat32Array pos_data = lap[pos_ch];
+    PackedFloat32Array yaw_data = lap[yaw_ch];
+    PackedFloat32Array speed_data = lap[speed_ch];
+
+    int size = time_data.size();
+    if (size == 0 || size != steer_data.size() || size != pos_data.size() || size != yaw_data.size() || size != speed_data.size()) {
+        return results;
+    }
+
+    const int32_t* t_ptr = time_data.ptr();
+    const float* st_ptr = steer_data.ptr();
+    const float* p_ptr = pos_data.ptr();
+    const float* y_ptr = yaw_data.ptr();
+    const float* s_ptr = speed_data.ptr();
+
+    bool in_understeer = false;
+    int understeer_start_idx = -1;
+    float peak_steer_ratio = 0.0f;
+    float peak_steer_diff = 0.0f;
+
+    auto analyze_understeer = [&](int start_idx, int end_idx) {
+        int duration = t_ptr[end_idx] - t_ptr[start_idx];
+        if (duration > 300) { // must be plowing for at least 300ms
+            godot::Dictionary err;
+            if (peak_steer_diff > 35.0f) {
+                err["type"] = MISTAKE_HEAVY_UNDERSTEER;
+            } else {
+                err["type"] = MISTAKE_UNDERSTEER;
+            }
+            err["start_pos"] = p_ptr[start_idx];
+            err["end_pos"] = p_ptr[end_idx];
+            err["score"] = peak_steer_ratio; // steer ratio
+            results.push_back(err);
+        }
+    };
+
+    for (int i = 0; i < size; ++i) {
+        float speed = s_ptr[i];
+        
+        // understeer at low speeds is often geometrical, ignore < 50 km/h
+        if (speed < 50.0f) {
+            if (in_understeer) {
+                analyze_understeer(understeer_start_idx, i - 1);
+                in_understeer = false;
+            }
+            continue;
+        }
+        
+        float current_steer = std::abs(st_ptr[i]);
+        float current_yaw = std::abs(y_ptr[i]);
+        
+        // steering pct should not exceed (yaw_rate * 1.2 + 15)
+        // if the driver exceeds this, they are scrubbing the front tires
+        float steer_threshold = current_yaw * 1.2f + 15.0f;
+        
+        // prevent straights or gentle corners from triggering it
+        if (current_steer > 30.0f && current_steer > steer_threshold) {
+            float steer_diff = current_steer - steer_threshold;
+            
+            if (!in_understeer) {
+                in_understeer = true;
+                understeer_start_idx = i;
+                peak_steer_ratio = current_steer / (current_yaw > 1.0f ? current_yaw : 1.0f);
+                peak_steer_diff = steer_diff;
+            } else {
+                float current_ratio = current_steer / (current_yaw > 1.0f ? current_yaw : 1.0f);
+                if (current_ratio > peak_steer_ratio) peak_steer_ratio = current_ratio;
+                if (steer_diff > peak_steer_diff) peak_steer_diff = steer_diff;
+            }
+        } else {
+            if (in_understeer) {
+                analyze_understeer(understeer_start_idx, i);
+                in_understeer = false;
+            }
+        }
+    }
+    
+    if (in_understeer) {
+        analyze_understeer(understeer_start_idx, size - 1);
     }
 
     return results;
