@@ -1,5 +1,6 @@
 #include "driving_analyzer.h"
 #include "sim_telemetry_manager.h"
+#include <algorithm>
 #include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
@@ -26,13 +27,95 @@ godot::Array DrivingAnalyzer::analyze_lap(SimTelemetryManager* sim, const godot:
     append_results(check_understeer(sim, lap));
     append_results(check_loss_of_control(sim, lap));
 
+    std::vector<godot::Dictionary> error_vec;
     for (int i = 0; i < errors.size(); ++i) {
-        godot::Dictionary err = errors[i];
-        err["id"] = i;
-        errors[i] = err;
+        error_vec.push_back(errors[i]);
     }
 
-    return errors;
+    // sort by start_pos
+    std::sort(error_vec.begin(), error_vec.end(), [](const godot::Dictionary& a, const godot::Dictionary& b) {
+        return (float)a["start_pos"] < (float)b["start_pos"];
+    });
+
+    // filter overlapping related mistakes
+    // group 1: oversteer/control loss
+    // group 2: understeer
+    auto get_mistake_group = [](int type) -> int {
+        if (type == MISTAKE_LOSS_OF_CONTROL || type == MISTAKE_DRIFT || type == MISTAKE_SNAP_OVERSTEER || type == MISTAKE_MINOR_OVERSTEER) return 1;
+        if (type == MISTAKE_HEAVY_UNDERSTEER || type == MISTAKE_UNDERSTEER) return 2;
+        return 0;
+    };
+
+    auto get_mistake_priority = [](int type) -> int {
+        if (type == MISTAKE_LOSS_OF_CONTROL) return 4;
+        if (type == MISTAKE_DRIFT) return 3;
+        if (type == MISTAKE_SNAP_OVERSTEER) return 2;
+        if (type == MISTAKE_MINOR_OVERSTEER) return 1;
+        
+        if (type == MISTAKE_HEAVY_UNDERSTEER) return 2;
+        if (type == MISTAKE_UNDERSTEER) return 1;
+        return 0;
+    };
+
+    std::vector<godot::Dictionary> final_errors;
+    for (size_t i = 0; i < error_vec.size(); ++i) {
+        godot::Dictionary current = error_vec[i];
+        int type_curr = current["type"];
+        int group_curr = get_mistake_group(type_curr);
+        
+        bool drop = false;
+        if (group_curr != 0) {
+            float start_curr = current["start_pos"];
+            float end_curr = current["end_pos"];
+            int prio_curr = get_mistake_priority(type_curr);
+            
+            for (size_t j = 0; j < error_vec.size(); ++j) {
+                if (i == j) continue;
+                godot::Dictionary other = error_vec[j];
+                int type_other = other["type"];
+                int group_other = get_mistake_group(type_other);
+                
+                if (group_curr == group_other) {
+                    float start_other = other["start_pos"];
+                    float end_other = other["end_pos"];
+                    int prio_other = get_mistake_priority(type_other);
+                    
+                    // check overlap
+                    // catch closely following errors
+                    float margin = 0.002f;
+                    bool overlap = (start_curr <= end_other + margin) && (end_curr >= start_other - margin);
+                    
+                    if (overlap) {
+                        if (prio_other > prio_curr) {
+                            drop = true;
+                            break;
+                        } else if (prio_other == prio_curr && j < i) {
+                            // tie-breaker: keep the first one evaluated in the loop
+                            drop = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (!drop) {
+            final_errors.push_back(current);
+        }
+    }
+    
+    godot::Array ret;
+    for (const auto& err : final_errors) {
+        ret.push_back(err);
+    }
+
+    for (int i = 0; i < ret.size(); ++i) {
+        godot::Dictionary err = ret[i];
+        err["id"] = i;
+        ret[i] = err;
+    }
+    
+    return ret;
 }
 
 godot::Array DrivingAnalyzer::check_pedal_overlap(SimTelemetryManager* sim, const godot::Dictionary& lap) {
@@ -966,8 +1049,20 @@ godot::Array DrivingAnalyzer::check_understeer(SimTelemetryManager* sim, const g
             continue;
         }
         
-        float current_steer = std::abs(st_ptr[i]);
-        float current_yaw = std::abs(y_ptr[i]);
+        float current_steer_raw = st_ptr[i];
+        float current_yaw_raw = y_ptr[i];
+        
+        // if signs are different, it's counter-steering, NOT understeering
+        if (current_steer_raw * current_yaw_raw < 0.0f) {
+            if (in_understeer) {
+                analyze_understeer(understeer_start_idx, i);
+                in_understeer = false;
+            }
+            continue;
+        }
+        
+        float current_steer = std::abs(current_steer_raw);
+        float current_yaw = std::abs(current_yaw_raw);
         
         // steering pct should not exceed (yaw_rate * 1.2 + 15)
         // if the driver exceeds this, they are scrubbing the front tires
