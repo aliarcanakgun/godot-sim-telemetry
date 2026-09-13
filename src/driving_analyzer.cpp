@@ -1052,8 +1052,8 @@ godot::Array DrivingAnalyzer::check_understeer(SimTelemetryManager* sim, const g
         float current_steer_raw = st_ptr[i];
         float current_yaw_raw = y_ptr[i];
         
-        // if signs are different, it's counter-steering, NOT understeering
-        if (current_steer_raw * current_yaw_raw < 0.0f) {
+        // if signs are same; it's counter-steering, NOT understeering
+        if (current_steer_raw * current_yaw_raw > 0.0f) {
             if (in_understeer) {
                 analyze_understeer(understeer_start_idx, i);
                 in_understeer = false;
