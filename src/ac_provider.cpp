@@ -33,7 +33,20 @@ bool ACProvider::check_is_active() {
             String smVersion = wchar_to_gdstring((const wchar_t*)map_data, 15);
             UnmapViewOfFile(map_data);
             CloseHandle(hMapStatic);
-            return smVersion.begins_with("1.7"); // can be improved
+            if (!smVersion.begins_with("1.7")) return false; // can be improved
+            
+            HANDLE hMapGraphic = OpenFileMappingA(FILE_MAP_READ, FALSE, "Local\\acpmf_graphics");
+            if (hMapGraphic) {
+                void* graphic_data = MapViewOfFile(hMapGraphic, FILE_MAP_READ, 0, 0, sizeof(AC_SPageGraphic));
+                if (graphic_data) {
+                    AC_STATUS status = ((AC_SPageGraphic*)graphic_data)->status;
+                    UnmapViewOfFile(graphic_data);
+                    CloseHandle(hMapGraphic);
+                    return status != AC_OFF;
+                }
+                CloseHandle(hMapGraphic);
+            }
+            return false;
         }
         CloseHandle(hMapStatic);
     }

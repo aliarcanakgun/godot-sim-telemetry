@@ -62,25 +62,32 @@ godot::Array DrivingAnalyzer::check_pedal_overlap(SimTelemetryManager* sim, cons
     const float* p_ptr = pos_data.ptr();
 
     bool in_overlap = false;
-    int overlap_start_time = 0;
+    int accumulated_time = 0;
     float overlap_start_pos = 0.0f;
 
     for (int i = 0; i < size; ++i) {
         if (g_ptr[i] > 0.10f && b_ptr[i] > 0.10f) {
             if (!in_overlap) {
                 in_overlap = true;
-                overlap_start_time = t_ptr[i];
+                accumulated_time = 0;
                 overlap_start_pos = p_ptr[i];
+            } else if (i > 0) {
+                int dt = t_ptr[i] - t_ptr[i - 1];
+                if (dt >= 0 && dt < 500) accumulated_time += dt;
+                else in_overlap = false; // invalidate on large gap
             }
         } else {
             if (in_overlap) {
-                int duration = t_ptr[i] - overlap_start_time;
-                if (duration > 200) { // > 200ms threshold
+                if (i > 0) {
+                    int dt = t_ptr[i] - t_ptr[i - 1];
+                    if (dt >= 0 && dt < 500) accumulated_time += dt;
+                }
+                if (accumulated_time > 200) { // > 200ms threshold
                     godot::Dictionary err;
                     err["type"] = MISTAKE_PEDAL_OVERLAP;
                     err["start_pos"] = overlap_start_pos;
                     err["end_pos"] = p_ptr[i];
-                    err["score"] = (float)duration; // raw duration mapping
+                    err["score"] = (float)accumulated_time; 
                     results.push_back(err);
                 }
                 in_overlap = false;
@@ -90,13 +97,12 @@ godot::Array DrivingAnalyzer::check_pedal_overlap(SimTelemetryManager* sim, cons
     
     // check if lap ended while in overlap
     if (in_overlap) {
-        int duration = t_ptr[size - 1] - overlap_start_time;
-        if (duration > 200) {
+        if (accumulated_time > 200) {
             godot::Dictionary err;
             err["type"] = MISTAKE_PEDAL_OVERLAP;
             err["start_pos"] = overlap_start_pos;
             err["end_pos"] = p_ptr[size - 1];
-            err["score"] = (float)duration;
+            err["score"] = (float)accumulated_time;
             results.push_back(err);
         }
     }
@@ -135,25 +141,32 @@ godot::Array DrivingAnalyzer::check_coasting(SimTelemetryManager* sim, const god
     const float* p_ptr = pos_data.ptr();
 
     bool in_coasting = false;
-    int coasting_start_time = 0;
+    int accumulated_time = 0;
     float coasting_start_pos = 0.0f;
 
     for (int i = 0; i < size; ++i) {
         if (g_ptr[i] < 0.05f && b_ptr[i] < 0.05f && s_ptr[i] > 50.0f) {
             if (!in_coasting) {
                 in_coasting = true;
-                coasting_start_time = t_ptr[i];
+                accumulated_time = 0;
                 coasting_start_pos = p_ptr[i];
+            } else if (i > 0) {
+                int dt = t_ptr[i] - t_ptr[i - 1];
+                if (dt >= 0 && dt < 500) accumulated_time += dt;
+                else in_coasting = false;
             }
         } else {
             if (in_coasting) {
-                int duration = t_ptr[i] - coasting_start_time;
-                if (duration > 500) {
+                if (i > 0) {
+                    int dt = t_ptr[i] - t_ptr[i - 1];
+                    if (dt >= 0 && dt < 500) accumulated_time += dt;
+                }
+                if (accumulated_time > 500) {
                     godot::Dictionary err;
                     err["type"] = MISTAKE_COASTING;
                     err["start_pos"] = coasting_start_pos;
                     err["end_pos"] = p_ptr[i];
-                    err["score"] = (float)duration;
+                    err["score"] = (float)accumulated_time;
                     results.push_back(err);
                 }
                 in_coasting = false;
@@ -162,13 +175,12 @@ godot::Array DrivingAnalyzer::check_coasting(SimTelemetryManager* sim, const god
     }
     
     if (in_coasting) {
-        int duration = t_ptr[size - 1] - coasting_start_time;
-        if (duration > 500) {
+        if (accumulated_time > 500) {
             godot::Dictionary err;
             err["type"] = MISTAKE_COASTING;
             err["start_pos"] = coasting_start_pos;
             err["end_pos"] = p_ptr[size - 1];
-            err["score"] = (float)duration;
+            err["score"] = (float)accumulated_time;
             results.push_back(err);
         }
     }
@@ -204,31 +216,39 @@ godot::Array DrivingAnalyzer::check_abs_abuse(SimTelemetryManager* sim, const go
     const float* p_ptr = pos_data.ptr();
 
     bool in_braking = false;
-    int braking_start_time = 0;
+    int accumulated_braking_time = 0;
     float braking_start_pos = 0.0f;
     int abs_active_time = 0;
-    int last_time = 0;
 
     for (int i = 0; i < size; ++i) {
         if (b_ptr[i] > 5.0f) { // 5% threshold
             if (!in_braking) {
                 in_braking = true;
-                braking_start_time = t_ptr[i];
+                accumulated_braking_time = 0;
                 braking_start_pos = p_ptr[i];
                 abs_active_time = 0;
-                last_time = t_ptr[i];
-            } else {
-                int dt = t_ptr[i] - last_time;
-                if (a_ptr[i] > 0.5f) { // abs is active (50% threshold)
-                    abs_active_time += dt;
+            } else if (i > 0) {
+                int dt = t_ptr[i] - t_ptr[i - 1];
+                if (dt >= 0 && dt < 500) {
+                    accumulated_braking_time += dt;
+                    if (a_ptr[i] > 0.5f) { // abs is active (50% threshold)
+                        abs_active_time += dt;
+                    }
+                } else {
+                    in_braking = false;
                 }
-                last_time = t_ptr[i];
             }
         } else {
             if (in_braking) {
-                int total_braking_time = t_ptr[i] - braking_start_time;
-                if (total_braking_time > 200) { // 200ms threshold
-                    float abs_ratio = (float)abs_active_time / (float)total_braking_time * 100.0f;
+                if (i > 0) {
+                    int dt = t_ptr[i] - t_ptr[i - 1];
+                    if (dt >= 0 && dt < 500) {
+                        accumulated_braking_time += dt;
+                        if (a_ptr[i] > 0.5f) abs_active_time += dt;
+                    }
+                }
+                if (accumulated_braking_time > 200) { // 200ms threshold
+                    float abs_ratio = (float)abs_active_time / (float)accumulated_braking_time * 100.0f;
                     if (abs_ratio > 30.0f) { // 30% abs engagement
                         godot::Dictionary err;
                         err["type"] = MISTAKE_ABS_ABUSE;
@@ -245,9 +265,8 @@ godot::Array DrivingAnalyzer::check_abs_abuse(SimTelemetryManager* sim, const go
     
     // check if lap ended while braking
     if (in_braking) {
-        int total_braking_time = t_ptr[size - 1] - braking_start_time;
-        if (total_braking_time > 200) {
-            float abs_ratio = (float)abs_active_time / (float)total_braking_time * 100.0f;
+        if (accumulated_braking_time > 200) {
+            float abs_ratio = (float)abs_active_time / (float)accumulated_braking_time * 100.0f;
             if (abs_ratio > 30.0f) {
                 godot::Dictionary err;
                 err["type"] = MISTAKE_ABS_ABUSE;
@@ -399,7 +418,7 @@ godot::Array DrivingAnalyzer::check_shift_duration_and_downshift(SimTelemetryMan
     if (static_data.has("max_rpm")) max_rpm = static_data["max_rpm"];
 
     bool in_neutral = false;
-    int neutral_start_time = 0;
+    int accumulated_time = 0;
     float neutral_start_pos = 0.0f;
 
     for (int i = 1; i < size; ++i) {
@@ -408,18 +427,24 @@ godot::Array DrivingAnalyzer::check_shift_duration_and_downshift(SimTelemetryMan
         if (g_ptr[i] == 0 && s_ptr[i] > 50.0f) {
             if (!in_neutral) {
                 in_neutral = true;
-                neutral_start_time = t_ptr[i];
+                accumulated_time = 0;
                 neutral_start_pos = p_ptr[i];
+            } else {
+                int dt = t_ptr[i] - t_ptr[i - 1];
+                if (dt >= 0 && dt < 500) accumulated_time += dt;
+                else in_neutral = false;
             }
         } else {
             if (in_neutral) {
-                int shift_duration = t_ptr[i] - neutral_start_time;
-                if (shift_duration > 500) { // 500ms threshold
+                int dt = t_ptr[i] - t_ptr[i - 1];
+                if (dt >= 0 && dt < 500) accumulated_time += dt;
+                
+                if (accumulated_time > 500) { // 500ms threshold
                     godot::Dictionary err;
                     err["type"] = MISTAKE_SLOW_SHIFT;
                     err["start_pos"] = neutral_start_pos;
                     err["end_pos"] = p_ptr[i];
-                    err["score"] = (float)shift_duration;
+                    err["score"] = (float)accumulated_time;
                     results.push_back(err);
                 }
                 in_neutral = false;
@@ -444,13 +469,12 @@ godot::Array DrivingAnalyzer::check_shift_duration_and_downshift(SimTelemetryMan
     }
 
     if (in_neutral) {
-        int shift_duration = t_ptr[size - 1] - neutral_start_time;
-        if (shift_duration > 500) {
+        if (accumulated_time > 500) {
             godot::Dictionary err;
             err["type"] = MISTAKE_SLOW_SHIFT;
             err["start_pos"] = neutral_start_pos;
             err["end_pos"] = p_ptr[size - 1];
-            err["score"] = (float)shift_duration;
+            err["score"] = (float)accumulated_time;
             results.push_back(err);
         }
     }
