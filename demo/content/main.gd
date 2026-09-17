@@ -15,9 +15,6 @@ var accum := 0.0
 	#if !loaded_data: return
 	#
 	#accum += delta
-	#if accum < $ACTelemetry.sample_interval: return
-	#
-	#accum -= $ACTelemetry.sample_interval
 	#
 	#var snapshot = loaded_data[last_i]
 	#$Label.text = "Speed: %0.1f\nGear: %s" % [snapshot.physics_speedKmh, ["R", "N", "1", "2", "3", "4", "5", "6", "7"][snapshot.physics_gear]]

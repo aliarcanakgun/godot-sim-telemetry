@@ -84,7 +84,6 @@ void SimTelemetryManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("close_loaded_session"), &SimTelemetryManager::close_loaded_session);
     
     ClassDB::bind_method(D_METHOD("get_loaded_session_lap_count"), &SimTelemetryManager::get_loaded_session_lap_count);
-    ClassDB::bind_method(D_METHOD("get_loaded_session_sample_interval"), &SimTelemetryManager::get_loaded_session_sample_interval);
     ClassDB::bind_method(D_METHOD("get_loaded_session_samples_per_meter"), &SimTelemetryManager::get_loaded_session_samples_per_meter);
     ClassDB::bind_method(D_METHOD("get_loaded_session_lap_data", "lap_index"), &SimTelemetryManager::get_loaded_session_lap_data);
     ClassDB::bind_method(D_METHOD("get_loaded_session_static_data"), &SimTelemetryManager::get_loaded_session_static_data);
@@ -102,8 +101,6 @@ void SimTelemetryManager::_bind_methods() {
     ClassDB::add_signal("SimTelemetryManager", MethodInfo("compression_finished", PropertyInfo(Variant::STRING, "file_path"), PropertyInfo(Variant::BOOL, "success")));
     ClassDB::add_signal("SimTelemetryManager", MethodInfo("uncompression_finished", PropertyInfo(Variant::STRING, "file_path"), PropertyInfo(Variant::BOOL, "success")));
 
-    ClassDB::bind_method(D_METHOD("get_sample_interval"), &SimTelemetryManager::get_sample_interval);
-    ClassDB::bind_method(D_METHOD("set_sample_interval", "interval"), &SimTelemetryManager::set_sample_interval);
     ClassDB::bind_method(D_METHOD("get_samples_per_meter"), &SimTelemetryManager::get_samples_per_meter);
     ClassDB::bind_method(D_METHOD("set_samples_per_meter", "spm"), &SimTelemetryManager::set_samples_per_meter);
     ClassDB::bind_method(D_METHOD("get_save_file_signature"), &SimTelemetryManager::get_save_file_signature);
@@ -116,7 +113,6 @@ void SimTelemetryManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("uncompress_file", "file_path"), &SimTelemetryManager::uncompress_file);
     ClassDB::bind_method(D_METHOD("uncompress_file_async", "file_path"), &SimTelemetryManager::uncompress_file_async);
 
-    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sample_interval"), "set_sample_interval", "get_sample_interval");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "samples_per_meter"), "set_samples_per_meter", "get_samples_per_meter");
     ADD_PROPERTY(PropertyInfo(Variant::INT, "default_compression_method", PROPERTY_HINT_ENUM, "None,ZSTD"), "set_default_compression_method", "get_default_compression_method");
 }
@@ -182,7 +178,6 @@ String SimTelemetryManager::connect_to_sim(const String& sim_id) {
     ISimProvider* new_prov = _create_provider(sim_id);
     if (!new_prov) return "Unsupported sim ID: " + sim_id;
 
-    new_prov->set_sample_interval(sample_interval);
     new_prov->set_samples_per_meter(samples_per_meter);
 
     active_provider.reset(new_prov);
@@ -282,7 +277,6 @@ String SimTelemetryManager::load_session_data(const String& file_path) {
         return "Unknown or unsupported file signature: " + signature;
     }
     
-    new_prov->set_sample_interval(sample_interval);
     new_prov->set_samples_per_meter(samples_per_meter);
     
     active_provider.reset(new_prov);
@@ -319,12 +313,7 @@ int SimTelemetryManager::get_loaded_session_lap_count() {
     return active_provider->get_loaded_session_lap_count();
 }
 
-double SimTelemetryManager::get_loaded_session_sample_interval() {
-    if (active_provider) {
-        return active_provider->get_loaded_session_sample_interval();
-    }
-    return 0.0;
-}
+
 
 
 void SimTelemetryManager::set_default_compression_method(CompressionMethod method) {

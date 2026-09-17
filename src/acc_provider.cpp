@@ -184,11 +184,10 @@ String ACCProvider::stop_capture(const String& output_file_path) {
     
     ACC_SPageStatic static_copy = *dataStatic;
 
-    double s_interval = sample_interval;
     double s_spm = samples_per_meter;
     
-    std::thread([this, data_to_save = std::move(data_to_save), static_copy, s_interval, s_spm, final_path]() mutable {
-        this->_flush_sessions_to_disk(std::move(data_to_save), static_copy, s_interval, s_spm, final_path);
+    std::thread([this, data_to_save = std::move(data_to_save), static_copy, s_spm, final_path]() mutable {
+        this->_flush_sessions_to_disk(std::move(data_to_save), static_copy, s_spm, final_path);
     }).detach();
 
     return final_path;
@@ -210,7 +209,7 @@ String ACCProvider::_get_session_suffix(int session_enum) {
     }
 }
 
-void ACCProvider::_flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_to_save, ACC_SPageStatic static_data_copy, double save_interval, double save_spm, String path) {
+void ACCProvider::_flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_to_save, ACC_SPageStatic static_data_copy, double save_spm, String path) {
     // remove empty/junk laps
     // NOTE: some checks will yield incorrect results
     //       if the last lap is removed.
@@ -271,7 +270,6 @@ void ACCProvider::_flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_
     outfile.write(&static_data_copy, sizeof(ACC_SPageStatic));
     if (outfile.fail()) { outfile.close(); return; }
 
-    outfile.write(&save_interval, sizeof(double));
     outfile.write(&save_spm, sizeof(double));
 
     uint64_t total_laps = data_to_save.size();
@@ -611,7 +609,7 @@ Dictionary ACCProvider::get_session_metadata_from_file(const String& file_path) 
     TelemetryFile infile;
     uint64_t count = 0;
     int64_t dummy_ts = 0;
-    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
+    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
     if (!err.is_empty()) return Dictionary();
 
     loaded_session_lap_count = count;
@@ -658,7 +656,6 @@ void ACCProvider::close_session() {
     loaded_session_data.shrink_to_fit();
     loaded_session_lap_offsets.clear();
     loaded_session_lap_offsets.shrink_to_fit();
-    loaded_session_sample_interval = 0.0;
     loaded_session_samples_per_meter = 0.0;
     loaded_session_lap_count = -1;
     loaded_session_static_data = {};
@@ -1003,7 +1000,7 @@ String ACCProvider::get_internal_channel_name(const String& standard_name) {
     return standard_name; // fallback
 }
 
-String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp) {
+String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp) {
     if (file_path.is_empty()) return "file path is empty";
 
     if (!infile.open_read(file_path)) return "could not open file: " + file_path;
@@ -1031,12 +1028,6 @@ String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& i
         infile.close(); return "failed reading static data";
     }
     
-    // read sample interval
-    infile.read(&out_sample_interval, sizeof(double));
-    if (infile.fail()) {
-        infile.close(); return "failed reading sample interval";
-    }
-    
     // read samples per meter
     infile.read(&out_samples_per_meter, sizeof(double));
     if (infile.fail()) {
@@ -1061,7 +1052,7 @@ String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& i
     return "";
 }
 
-Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat, uint64_t count, std::vector<ACC_LapDataChannels>& laps) {
+Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat, uint64_t count, const std::vector<ACC_LapDataChannels>& laps) {
     Dictionary meta;
     double track_length = get_acc_track_length(wchar_to_gdstring(stat.track, 33).to_lower());
 
@@ -1657,7 +1648,7 @@ std::vector<float> ACCProvider::get_acc_sectors(const String& track_name) const 
 }
 
 void ACCProvider::logging_loop() {
-    auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(sample_interval));
+    auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(0.001));
     auto next_tick = std::chrono::steady_clock::now();
 
     timeBeginPeriod(1);
@@ -1665,7 +1656,7 @@ void ACCProvider::logging_loop() {
     int stale_counter = 0;
     int graphic_stale_counter = 0;
     int local_last_graphic_packet_id = -1;
-    int max_stale_ticks = static_cast<int>(3.0 / sample_interval); // 3 secs timeout
+    int max_stale_ticks = 3000; // 3 secs timeout
 
     wchar_t cached_track[33] = {0};
     double current_track_length = 0.0;
@@ -1711,11 +1702,10 @@ void ACCProvider::logging_loop() {
                     std::vector<ACC_LapDataChannels> data_to_save = std::move(sessions_data);
                     sessions_data.clear();
                     ACC_SPageStatic static_copy = *dataStatic;
-                    double save_interval = sample_interval;
                     double save_spm = samples_per_meter;
                     
-                    std::thread([this, data_to_save = std::move(data_to_save), static_copy, save_interval, save_spm, final_path]() mutable {
-                        this->_flush_sessions_to_disk(std::move(data_to_save), static_copy, save_interval, save_spm, final_path);
+                    std::thread([this, data_to_save = std::move(data_to_save), static_copy, save_spm, final_path]() mutable {
+                        this->_flush_sessions_to_disk(std::move(data_to_save), static_copy, save_spm, final_path);
                     }).detach();
                 }
                 
@@ -2355,7 +2345,7 @@ String ACCProvider::load_session(const String& file_path) {
     TelemetryFile infile;
     uint64_t count = 0;
     int64_t dummy_ts;
-    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_sample_interval, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
+    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
     if (!err.is_empty()) return err;
 
     loaded_session_lap_count = count;
@@ -2552,12 +2542,12 @@ Dictionary ACCProvider::calculate_lap_time_delta(const String& target_file_path,
     auto load_lap = [this, &session_spm](String file_path, int lap_index, ACC_LapDataChannels &out_lap) -> bool {
         TelemetryFile infile;
         ACC_SPageStatic stat;
-        double interval, spm;
+        double spm;
         uint64_t count;
         std::vector<uint64_t> offsets;
 
         int64_t timestamp = 0;
-        if (!_open_session_file(file_path, infile, stat, interval, spm, count, offsets, timestamp).is_empty()) {
+        if (!_open_session_file(file_path, infile, stat, spm, count, offsets, timestamp).is_empty()) {
             return false;
         }
 

@@ -99,12 +99,7 @@
                 Returns the total number of laps recorded in the loaded session.
             </description>
         </method>
-        <method name="get_loaded_session_sample_interval">
-            <return type="float" />
-            <description>
-                Returns the time-based sample interval used for the loaded session.
-            </description>
-        </method>
+
         <method name="get_loaded_session_samples_per_meter">
             <return type="float" />
             <description>
@@ -187,8 +182,7 @@
         </method>
     </methods>
     <members>
-        <member name="sample_interval" type="float" setter="set_sample_interval" getter="get_sample_interval" default="0.02">The time interval in seconds between telemetry samples. Only applicable if [member samples_per_meter] is 0 or less.</member>
-        <member name="samples_per_meter" type="float" setter="set_samples_per_meter" getter="get_samples_per_meter" default="1.0">The distance interval in meters between telemetry samples. Overrides [member sample_interval] if greater than 0. Highly recommended for accurate delta generation.</member>
+        <member name="samples_per_meter" type="float" setter="set_samples_per_meter" getter="get_samples_per_meter" default="1.0">The distance interval in meters between telemetry samples.</member>
         <member name="save_file_signature" type="String" setter="set_save_file_signature" getter="get_save_file_signature" default="&quot;ACTL&quot;">A 4-character signature added to the beginning of the saved binary session file.</member>
     </members>
     <signals>

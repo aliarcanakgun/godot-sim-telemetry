@@ -87,15 +87,13 @@ The core node managing simulator connections, data logging, and session handling
 * `get_loaded_session_lap_stats(lap_index: int) -> Dictionary`: Returns key statistics for a lap (top speed, min speed, sector times, average values).
 * `get_loaded_session_static_data() -> Dictionary`: Returns static data of the loaded session.
 * `get_loaded_session_lap_count() -> int`: Returns the total number of laps recorded in the loaded session.
-* `get_loaded_session_sample_interval() -> float`: Returns the time-based sample interval used for the session.
 * `get_loaded_session_samples_per_meter() -> float`: Returns the distance-based sampling rate used for the session.
 * `get_loaded_session_lap_fuel_consumption(lap_index: int) -> float`: Calculates fuel consumed (in liters) during the specified lap.
 * `get_loaded_session_total_fuel_consumption() -> float`: Calculates total fuel consumed (in liters) across the loaded session.
 * `get_loaded_session_total_laps() -> float`: Returns the exact float value of total laps completed (including the incomplete final lap).
 * `close_loaded_session() -> void`: Closes the loaded session and frees its memory.
 * `calculate_lap_time_delta(target_file_path: String, target_lap_index: int = 0, current_file_path: String = "", current_lap_index: int = 0, reference_positions: PackedFloat32Array = PackedFloat32Array()) -> PackedFloat32Array`: Calculates the time delta (in seconds) between two laps across distance.
-* `sample_interval: float`: Property for the time interval between telemetry samples (seconds).
-* `samples_per_meter: float`: Property for the distance interval between telemetry samples (meters). Overrides `sample_interval` if > 0.
+* `samples_per_meter: float`: Property for the distance interval between telemetry samples (meters).
 * `save_file_signature: String`: Property for the signature string written at the beginning of the binary save file (default `"ACTL"`).
 * Signal `connection_lost`: Emitted when the shared memory connection is unexpectedly lost.
 

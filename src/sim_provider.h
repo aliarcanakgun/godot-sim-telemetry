@@ -15,7 +15,6 @@ public:
     virtual godot::String stop_capture(const godot::String& output_file_path = "") = 0;
     virtual bool is_logging_active() const = 0;
 
-    virtual void set_sample_interval(double interval) = 0;
     virtual void set_samples_per_meter(double spm) = 0;
     virtual godot::String get_save_file_signature() const = 0;
     
@@ -41,7 +40,6 @@ public:
     
     virtual int get_loaded_session_lap_count() = 0;
     virtual godot::Dictionary get_loaded_session_static_data() = 0;
-    virtual double get_loaded_session_sample_interval() = 0;
     virtual double get_loaded_session_samples_per_meter() = 0;
     virtual double get_loaded_session_total_fuel_consumption() = 0;
     virtual double get_loaded_session_lap_fuel_consumption(int lap_index) = 0;

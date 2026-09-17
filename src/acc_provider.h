@@ -25,7 +25,6 @@ private:
     ACC_SPageStatic* dataStatic;
 
     // logging settings
-    double sample_interval = 0.02; // 50 hz
     double samples_per_meter = 1.0;
     
     // state
@@ -46,7 +45,6 @@ private:
     // loaded session data
     std::vector<ACC_LapDataChannels> loaded_session_data;
     ACC_SPageStatic loaded_session_static_data;
-    double loaded_session_sample_interval = 0.0;
     double loaded_session_samples_per_meter = 0.0;
     int loaded_session_lap_count = -1;
     std::vector<uint64_t> loaded_session_lap_offsets;
@@ -63,12 +61,12 @@ private:
     CompressionMethod compression_method = COMPRESSION_ZSTD;
 
     void logging_loop();
-    String _open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_sample_interval, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp);
-    Dictionary _calculate_session_metadata(const ACC_SPageStatic& stat, uint64_t count, std::vector<ACC_LapDataChannels>& laps);
+    String _open_session_file(const String& file_path, TelemetryFile& infile, ACC_SPageStatic& out_static, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp);
+    Dictionary _calculate_session_metadata(const ACC_SPageStatic& stat, uint64_t count, const std::vector<ACC_LapDataChannels>& laps);
     Dictionary _static_to_dict(const ACC_SPageStatic &s);
     Dictionary _lap_to_dict(const ACC_LapDataChannels& c);
 
-    void _flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_to_save, ACC_SPageStatic static_data_copy, double save_interval, double save_spm, String path);
+    void _flush_sessions_to_disk(std::vector<ACC_LapDataChannels> data_to_save, ACC_SPageStatic static_data_copy, double save_spm, String path);
     String _get_session_suffix(int session_enum);
 
     void apply_math_conversions_in_place(ACC_LapDataChannels& lap);
@@ -95,7 +93,6 @@ public:
     virtual godot::String stop_capture(const godot::String& output_file_path = "") override;
     virtual bool is_logging_active() const override;
 
-    virtual void set_sample_interval(double interval) override { if (!is_logging) sample_interval = interval; }
     virtual void set_samples_per_meter(double spm) override { if (!is_logging) samples_per_meter = spm; }
     virtual godot::String get_save_file_signature() const override { return save_file_signature; }
     
@@ -112,7 +109,6 @@ public:
     
     virtual int get_loaded_session_lap_count() override { return loaded_session_lap_count; }
     virtual godot::Dictionary get_loaded_session_static_data() override;
-    virtual double get_loaded_session_sample_interval() override { return loaded_session_sample_interval; }
     virtual double get_loaded_session_samples_per_meter() override { return loaded_session_samples_per_meter; }
     virtual double get_loaded_session_total_fuel_consumption() override;
     virtual double get_loaded_session_lap_fuel_consumption(int lap_index) override;

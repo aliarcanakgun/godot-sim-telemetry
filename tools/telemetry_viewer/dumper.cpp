@@ -34,9 +34,8 @@ int main(int argc, char** argv) {
     AC_SPageStatic static_data;
     in.read(reinterpret_cast<char*>(&static_data), sizeof(AC_SPageStatic));
     
-    // read sample interval - samples per meter
-    double sample_interval, samples_per_meter;
-    in.read(reinterpret_cast<char*>(&sample_interval), sizeof(double));
+    // read samples per meter
+    double samples_per_meter;
     in.read(reinterpret_cast<char*>(&samples_per_meter), sizeof(double));
     
     // read total laps

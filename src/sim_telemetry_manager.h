@@ -19,7 +19,6 @@ private:
     String current_sim_id = "";
     
     // properties
-    double sample_interval = 0.02;
     double samples_per_meter = 1.0;
     CompressionMethod default_compression_method = COMPRESSION_ZSTD;
 
@@ -62,7 +61,6 @@ public:
     int get_loaded_session_lap_count();
     Ref<GDLapTelemetry> get_loaded_session_lap_data(int lap_index);
     Dictionary get_loaded_session_static_data();
-    double get_loaded_session_sample_interval();
     double get_loaded_session_samples_per_meter();
     double get_loaded_session_total_fuel_consumption();
     double get_loaded_session_lap_fuel_consumption(int lap_index);
@@ -74,14 +72,6 @@ public:
     Array analyze_lap(const Dictionary& lap_data, const Dictionary& reference_lap_data = Dictionary());
 
     // getters/setters
-    double get_sample_interval() const { return sample_interval; }
-    void set_sample_interval(double p_sample_interval) { 
-        if (p_sample_interval <= 0.0) return;
-        if (!is_currently_logging()) {
-            sample_interval = p_sample_interval; 
-            if (active_provider) active_provider->set_sample_interval(sample_interval);
-        }
-    }
 
     double get_samples_per_meter() const { return samples_per_meter; }
     void set_samples_per_meter(double p_samples_per_meter) { 
