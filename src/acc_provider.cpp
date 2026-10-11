@@ -46,10 +46,10 @@ bool ACCProvider::check_is_active() {
             if (hMapGraphic) {
                 void* graphic_data = MapViewOfFile(hMapGraphic, FILE_MAP_READ, 0, 0, sizeof(ACC_SPageGraphic));
                 if (graphic_data) {
-                    AC_STATUS status = ((ACC_SPageGraphic*)graphic_data)->status;
+                    ACC_STATUS status = ((ACC_SPageGraphic*)graphic_data)->status;
                     UnmapViewOfFile(graphic_data);
                     CloseHandle(hMapGraphic);
-                    return status != AC_OFF;
+                    return status != ACC_OFF;
                 }
                 CloseHandle(hMapGraphic);
             }
