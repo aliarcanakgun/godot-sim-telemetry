@@ -8,7 +8,7 @@
 * First, you need SCons installed on your PC (you can install it using `python -m pip install --user scons`)
 * Then, clone the repository using:
 ```bash
-git clone --recurse-submodules https://github.com/aliarcanakgun/godot-ac-telemetry.git
+git clone --recurse-submodules https://github.com/aliarcanakgun/godot-sim-telemetry.git
 cd godot-ac-telemetry
 ```
 * Finally, in the root folder, use the commands below to build the extension (godot-cpp will be compiled with the first build):
