@@ -20,7 +20,230 @@ bool TelemetryFile::open_write() {
     return true;
 }
 
+static godot::String globalize_if_needed(const godot::String& path) {
+    godot::String os_path = path;
+    if (os_path.begins_with("res://") || os_path.begins_with("user://")) {
+        os_path = godot::ProjectSettings::get_singleton()->globalize_path(os_path);
+    }
+    return os_path;
+}
+
 bool TelemetryFile::open_read(const godot::String& path) {
+    close();
+    is_writing = false;
+    rw_pos = 0;
+    file_failed = false;
+
+    godot::String os_path = globalize_if_needed(path);
+
+    in_file.open(os_path.utf8().get_data(), std::ios::binary);
+    if (!in_file.is_open()) {
+        file_failed = true;
+        return false;
+    }
+
+    in_file.seekg(0, std::ios::end);
+    uint64_t file_size = static_cast<uint64_t>(in_file.tellg());
+    in_file.seekg(0, std::ios::beg);
+
+    if (file_size < 4) {
+        close_stream();
+        file_failed = true;
+        return false;
+    }
+
+    in_file.read(reinterpret_cast<char*>(head), 4);
+    if (!in_file) {
+        close_stream();
+        file_failed = true;
+        return false;
+    }
+
+    stream_compressed = false;
+
+    if (file_size >= COMPRESSED_HEADER_SIZE) {
+        char magic[4];
+        in_file.read(magic, 4);
+
+        if (in_file && std::strncmp(magic, "ZST2", 4) == 0) { // compressed file
+            uint64_t uncompressed_size = 0;
+            in_file.read(reinterpret_cast<char*>(&uncompressed_size), 8);
+
+            dctx = ZSTD_createDCtx();
+            if (!in_file || !dctx) {
+                close_stream();
+                file_failed = true;
+                return false;
+            }
+
+            in_buf.resize(ZSTD_DStreamInSize());
+            scratch.resize(ZSTD_DStreamOutSize());
+            in_buf_pos = 0;
+            in_buf_size = 0;
+            in_eof = false;
+
+            stream_compressed = true;
+            stream_size = 4 + uncompressed_size;
+            stream_pos = 4;
+
+            // integrity check
+            // the frame header must agree with our header
+            stream_refill();
+            unsigned long long fcs = ZSTD_getFrameContentSize(in_buf.data(), in_buf_size);
+            if (fcs == ZSTD_CONTENTSIZE_ERROR || (fcs != ZSTD_CONTENTSIZE_UNKNOWN && fcs != uncompressed_size)) {
+                close_stream();
+                file_failed = true;
+                return false;
+            }
+        }
+    }
+
+    if (!stream_compressed) {
+        // uncompressed file
+        // real random access through the file itself
+        in_file.clear();
+        stream_size = file_size;
+        stream_pos = UINT64_MAX; // force a seek on first read
+    }
+
+    is_streaming = true;
+    is_open_flag = true;
+    return true;
+}
+
+void TelemetryFile::close_stream() {
+    if (dctx) {
+        ZSTD_freeDCtx(dctx);
+        dctx = nullptr;
+    }
+    if (in_file.is_open()) in_file.close();
+    in_file.clear();
+
+    std::vector<uint8_t>().swap(in_buf);
+    std::vector<uint8_t>().swap(scratch);
+    in_buf_pos = 0;
+    in_buf_size = 0;
+    in_eof = false;
+
+    is_streaming = false;
+    stream_compressed = false;
+    stream_size = 0;
+    stream_pos = 0;
+}
+
+bool TelemetryFile::stream_refill() {
+    in_buf_pos = 0;
+    in_buf_size = 0;
+    if (in_eof) return false;
+
+    in_file.read(reinterpret_cast<char*>(in_buf.data()), in_buf.size());
+    in_buf_size = static_cast<size_t>(in_file.gcount());
+    if (in_buf_size == 0) {
+        in_eof = true;
+        return false;
+    }
+    return true;
+}
+
+bool TelemetryFile::stream_rewind() {
+    ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+    in_file.clear();
+    in_file.seekg(COMPRESSED_HEADER_SIZE, std::ios::beg);
+    if (!in_file) return false;
+
+    in_buf_pos = 0;
+    in_buf_size = 0;
+    in_eof = false;
+    stream_pos = 4;
+    return true;
+}
+
+bool TelemetryFile::stream_decompress(uint8_t* dst, uint64_t size) {
+    ZSTD_outBuffer out = { dst, static_cast<size_t>(size), 0 };
+
+    while (out.pos < out.size) {
+        if (in_buf_pos >= in_buf_size) stream_refill();
+
+        ZSTD_inBuffer in = { in_buf.data(), in_buf_size, in_buf_pos };
+        size_t out_before = out.pos;
+        size_t in_before = in.pos;
+
+        size_t ret = ZSTD_decompressStream(dctx, &out, &in);
+        in_buf_pos = in.pos;
+
+        if (ZSTD_isError(ret)) return false;
+
+        if (out.pos < out.size) {
+            // corrupted
+            if (ret == 0) return false;
+            // no progress possible
+            if (out.pos == out_before && in.pos == in_before && in_eof) return false;
+        }
+    }
+
+    stream_pos += out.pos;
+    return true;
+}
+
+bool TelemetryFile::stream_skip(uint64_t size) {
+    while (size > 0) {
+        uint64_t chunk = size < scratch.size() ? size : scratch.size();
+        if (!stream_decompress(scratch.data(), chunk)) return false;
+        size -= chunk;
+    }
+    return true;
+}
+
+bool TelemetryFile::stream_read(void* dst, uint64_t size) {
+    if (size == 0) return true;
+    if (rw_pos > stream_size || size > stream_size - rw_pos) return false;
+
+    uint8_t* out = static_cast<uint8_t*>(dst);
+
+    if (!stream_compressed) {
+        if (stream_pos != rw_pos) {
+            in_file.clear();
+            in_file.seekg(static_cast<std::streamoff>(rw_pos), std::ios::beg);
+            if (!in_file) return false;
+        }
+        in_file.read(reinterpret_cast<char*>(out), static_cast<std::streamsize>(size));
+        if (static_cast<uint64_t>(in_file.gcount()) != size) {
+            stream_pos = UINT64_MAX;
+            return false;
+        }
+        rw_pos += size;
+        stream_pos = rw_pos;
+        return true;
+    }
+
+    // first 4 bytes are stored raw
+    if (rw_pos < 4) {
+        uint64_t n = 4 - rw_pos;
+        if (n > size) n = size;
+        std::memcpy(out, head + rw_pos, n);
+        out += n;
+        size -= n;
+        rw_pos += n;
+        if (size == 0) return true;
+    }
+
+    if (rw_pos < stream_pos) {
+        if (!stream_rewind()) return false;
+    }
+    if (rw_pos > stream_pos) {
+        if (!stream_skip(rw_pos - stream_pos)) return false;
+    }
+
+    if (!stream_decompress(out, size)) return false;
+    rw_pos += size;
+    return true;
+}
+
+// loads the whole file into memory.
+// only used by compress/uncompress helpers,
+// which need the full payload anyway.
+bool TelemetryFile::open_read_full(const godot::String& path) {
+    close();
     is_writing = false;
     rw_pos = 0;
     buffer.clear();
@@ -146,7 +369,7 @@ bool TelemetryFile::close_and_save(const godot::String& path, bool compress) {
 
 bool TelemetryFile::compress_existing_file(const godot::String& path) {
     TelemetryFile file;
-    if (!file.open_read(path)) return false;
+    if (!file.open_read_full(path)) return false;
     
     file.is_writing = true; // allow close_and_save to work
     file.is_open_flag = true;
@@ -155,7 +378,7 @@ bool TelemetryFile::compress_existing_file(const godot::String& path) {
 
 bool TelemetryFile::uncompress_existing_file(const godot::String& path) {
     TelemetryFile file;
-    if (!file.open_read(path)) return false;
+    if (!file.open_read_full(path)) return false;
     
     file.is_writing = true; // allow close_and_save to work
     file.is_open_flag = true;
@@ -166,6 +389,7 @@ void TelemetryFile::close() {
     is_open_flag = false;
     buffer.clear();
     rw_pos = 0;
+    close_stream();
 }
 
 TelemetryFile& TelemetryFile::seekg(uint64_t pos) {

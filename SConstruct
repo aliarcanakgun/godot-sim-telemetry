@@ -24,7 +24,10 @@ sources += Glob("thirdparty/zstd/lib/decompress/*.c")
 # (see https://docs.godotengine.org/en/stable/tutorials/export/feature_tags.html).
 # The final path should match a path in the '.gdextension' file.
 name = "godot-sim-telemetry"
-lib_filename = f"{env.subst('$SHLIBPREFIX')}{name}{env['suffix']}{env.subst('$SHLIBSUFFIX')}"
+if env["target"] == "template_release":
+    lib_filename = f"{env.subst('$SHLIBPREFIX')}simtelemetry{env.subst('$SHLIBSUFFIX')}"
+else:
+    lib_filename = f"{env.subst('$SHLIBPREFIX')}{name}{env['suffix']}{env.subst('$SHLIBSUFFIX')}"
 
 if env["target"] in ["editor", "template_debug"]:
     doc_data = env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob(f"demo/addons/{name}/docs/*.xml"))

@@ -6,7 +6,7 @@ doc_path = "docs"
 
 [libraries]
 windows.debug.x86_64 = "./bin/godot-sim-telemetry.windows.template_debug.x86_64.dll"
-windows.release.x86_64 = "./bin/godot-sim-telemetry.windows.template_release.x86_64.dll"
+windows.release.x86_64 = "./bin/simtelemetry.dll"
 
 [icons]
 SimTelemetryManager = "./icon.svg"
