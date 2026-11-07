@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/time.hpp>
 #include <cmath>
 #include <algorithm>
+#include <climits>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cstdio>
 #include <map>
@@ -594,71 +595,76 @@ Dictionary ACCProvider::get_live_snapshot() {
 }
 
 Dictionary ACCProvider::get_lap_data(int lap_index) {
-    if (lap_index < 0 || lap_index >= loaded_session_data.size()) {
+    if (lap_index < 0 || lap_index >= (int)loaded_visible_lap_offsets.size()) {
         return Dictionary();
     }
-    ACC_LapDataChannels lap_copy = loaded_session_data[lap_index];
-    apply_math_conversions_in_place(lap_copy);
-    return _lap_to_dict(lap_copy);
+
+    if (cached_lap_index != lap_index) {
+        TelemetryFile infile;
+        if (!infile.open_read(loaded_session_file_path)) {
+            return Dictionary();
+        }
+
+        cached_lap_index = -1;
+        infile.seekg(loaded_visible_lap_offsets[lap_index]);
+        cached_lap.read_from_stream(infile);
+        bool failed = infile.fail();
+        infile.close();
+
+        if (failed || cached_lap.speedKmh.empty()) {
+            cached_lap.clear();
+            return Dictionary();
+        }
+
+        _unwrap_lap_positions(cached_lap);
+        apply_math_conversions_in_place(cached_lap);
+        cached_lap_index = lap_index;
+    }
+
+    return _lap_to_dict(cached_lap);
 }
 
 Dictionary ACCProvider::get_session_metadata_from_file(const String& file_path) {
-    loaded_session_data.clear();
-    loaded_session_lap_offsets.clear();
-
-    TelemetryFile infile;
+    ACC_SPageStatic stat{};
+    double spm = 0.0;
     uint64_t count = 0;
-    int64_t dummy_ts = 0;
-    String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
-    if (!err.is_empty()) return Dictionary();
+    int64_t ts = 0;
+    std::vector<LapSummary> summaries;
+    double total_driven = 0.0;
+    int session_type = -1;
 
-    loaded_session_lap_count = count;
-
-    for (int i = 0; i < loaded_session_lap_count; ++i) {
-        ACC_LapDataChannels lap_data;
-        infile.seekg(loaded_session_lap_offsets[i]);
-        lap_data.read_from_stream(infile);
-        if (infile.fail()) {
-            return Dictionary();
-        }
-        
-        if (lap_data.speedKmh.empty()) continue;
-
-        if (!lap_data.normalizedCarPosition.empty()) {
-            float base_offset = 0.0f;
-            float prev_pos = lap_data.normalizedCarPosition[0];
-            for (size_t j = 1; j < lap_data.normalizedCarPosition.size(); ++j) {
-                float curr_pos = lap_data.normalizedCarPosition[j];
-                if (curr_pos - prev_pos < -0.5f) {
-                    base_offset += 1.0f;
-                } else if (curr_pos - prev_pos > 0.5f) {
-                    base_offset -= 1.0f;
-                }
-                prev_pos = curr_pos;
-                lap_data.normalizedCarPosition[j] = curr_pos + base_offset;
-            }
-        }
-        
-        loaded_session_data.push_back(lap_data);
+    if (!_scan_session_summaries(file_path, stat, spm, count, ts, summaries, total_driven, session_type)) {
+        return Dictionary();
     }
-    infile.close();
-    Dictionary ret = _calculate_session_metadata(loaded_session_static_data, count, loaded_session_data);
-    ret["timestamp"] = dummy_ts;
+
+    Dictionary ret = _build_session_metadata(stat, count, session_type, summaries);
+    ret["timestamp"] = ts;
     return ret;
 }
 
 Dictionary ACCProvider::get_session_metadata() {
-    return _calculate_session_metadata(loaded_session_static_data, loaded_session_lap_count, loaded_session_data);
+    if (!_ensure_summaries_loaded()) return Dictionary();
+    return _build_session_metadata(loaded_session_static_data, loaded_session_lap_count, loaded_session_type, loaded_lap_summaries);
 }
 
 void ACCProvider::close_session() {
-    loaded_session_data.clear();
-    loaded_session_data.shrink_to_fit();
+    loaded_session_file_path = "";
     loaded_session_lap_offsets.clear();
     loaded_session_lap_offsets.shrink_to_fit();
+    loaded_visible_lap_offsets.clear();
+    loaded_visible_lap_offsets.shrink_to_fit();
     loaded_session_samples_per_meter = 0.0;
     loaded_session_lap_count = -1;
     loaded_session_static_data = {};
+
+    summaries_loaded = false;
+    loaded_lap_summaries.clear();
+    loaded_lap_summaries.shrink_to_fit();
+    loaded_total_driven_laps = 0.0;
+    loaded_session_type = -1;
+
+    cached_lap_index = -1;
+    cached_lap = ACC_LapDataChannels();
 }
 
 String ACCProvider::get_internal_channel_name(const String& standard_name) {
@@ -1052,71 +1058,103 @@ String ACCProvider::_open_session_file(const String& file_path, TelemetryFile& i
     return "";
 }
 
-Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat, uint64_t count, const std::vector<ACC_LapDataChannels>& laps) {
-    Dictionary meta;
-    double track_length = get_acc_track_length(wchar_to_gdstring(stat.track, 33).to_lower());
-
-    meta["sim_id"] = "ACC";
-    meta["track_name"] = wchar_to_gdstring(stat.track, 33).to_lower();
-    meta["track_config"] = ""; // NOTE: 'trackConfiguration' is not used by acc
-    meta["car_name"] = wchar_to_gdstring(stat.carModel, 33);
-    meta["total_laps"] = (int)count;
-    meta["sector_count"] = stat.sectorCount;
-    
-    meta["session_type"] = -1;
-    for (uint64_t i = 0; i < count; i++) {
-        if (!laps[i].session.empty()) {
-            meta["session_type"] = laps[i].session[0];
-            break;
+void ACCProvider::_unwrap_lap_positions(ACC_LapDataChannels& lap) const {
+    // compatibility for old telemetry files (before commit 'e35eb69')
+    if (!lap.normalizedCarPosition.empty()) {
+        float base_offset = 0.0f;
+        float prev_pos = lap.normalizedCarPosition[0];
+        for (size_t j = 1; j < lap.normalizedCarPosition.size(); ++j) {
+            float curr_pos = lap.normalizedCarPosition[j];
+            if (curr_pos - prev_pos < -0.5f) {
+                base_offset += 1.0f;
+            } else if (curr_pos - prev_pos > 0.5f) {
+                base_offset -= 1.0f;
+            }
+            prev_pos = curr_pos;
+            lap.normalizedCarPosition[j] = curr_pos + base_offset;
         }
     }
+}
 
-    Array laps_arr;
-    int best_lap_time = 0;
-    Dictionary sector_positions_norm;
-    Dictionary sector_positions_m;
+bool ACCProvider::_scan_session_summaries(const String& file_path, ACC_SPageStatic& out_static, double& out_spm, uint64_t& out_lap_count, int64_t& out_timestamp, std::vector<LapSummary>& out_summaries, double& out_total_driven, int& out_session_type) {
+    out_summaries.clear();
+    out_total_driven = 0.0;
+    out_session_type = -1;
 
-    std::vector<float> boundaries = get_acc_sectors(wchar_to_gdstring(stat.track, 33).to_lower());
-    for (size_t s = 0; s < boundaries.size(); s++) {
-        sector_positions_norm[s] = boundaries[s];
-        sector_positions_m[s] = boundaries[s] * track_length;
-    }
-    
-    std::map<int, Dictionary> all_sector_times;
-    
-    for (uint64_t i = 0; i < count; i++) {
-        const ACC_LapDataChannels& lap = laps[i];
+    TelemetryFile infile;
+    std::vector<uint64_t> offsets;
+    String err = _open_session_file(file_path, infile, out_static, out_spm, out_lap_count, offsets, out_timestamp);
+    if (!err.is_empty()) return false;
+
+    out_summaries.reserve(out_lap_count);
+    bool found_session_type = false;
+    bool has_prev_pos = false;
+    double prev_driven_pos = 0.0;
+
+    ACC_LapDataChannels lap;
+    for (uint64_t i = 0; i < out_lap_count; ++i) {
+        infile.seekg(offsets[i]);
+        lap.read_from_stream(infile);
+        if (infile.fail()) {
+            infile.close();
+            return false;
+        }
+
         if (lap.speedKmh.empty()) continue;
-        
+
+        _unwrap_lap_positions(lap);
+
+        if (!found_session_type && !lap.session.empty()) {
+            out_session_type = lap.session[0];
+            found_session_type = true;
+        }
+
+        for (size_t j = 0; j < lap.normalizedCarPosition.size(); j++) {
+            double curr_pos = lap.normalizedCarPosition[j];
+            if (has_prev_pos) {
+                double diff = curr_pos - prev_driven_pos;
+                if (diff < -0.5 && prev_driven_pos > 0.8 && curr_pos < 0.2) {
+                    diff += 1.0;
+                } else if (diff > 0.5 && prev_driven_pos < 0.2 && curr_pos > 0.8) {
+                    diff -= 1.0;
+                }
+                if (std::abs(diff) > 0.1) {
+                    diff = 0.0; // ignore large jumps
+                }
+                out_total_driven += diff;
+            }
+            prev_driven_pos = curr_pos;
+            has_prev_pos = true;
+        }
+
+        LapSummary sum;
+        sum.snapshot_count = (int)lap.speedKmh.size();
+        sum.timestamp_count = (int)lap.timestamp.size();
+
         int current_sector = 0;
         int last_boundary_time = 0;
-        
         for (size_t j = 0; j < lap.currentSectorIndex.size(); j++) {
             if (lap.currentSectorIndex[j] > current_sector) {
                 int sector_time = lap.iCurrentTime[j] - last_boundary_time;
                 if (sector_time > 0) {
-                    if (!all_sector_times.count(i)) all_sector_times[i] = Dictionary();
-                    all_sector_times[i][current_sector] = sector_time;
+                    sum.meta_sector_times[current_sector] = sector_time;
                 }
                 last_boundary_time = lap.iCurrentTime[j];
                 current_sector = lap.currentSectorIndex[j];
             }
         }
-    }
-    
-    for (uint64_t i = 0; i < count; i++) {
-        const ACC_LapDataChannels& lap = laps[i];
 
-        if (lap.speedKmh.empty()) continue;
-
-        Dictionary lap_stats;
-        int lap_time = 0;
-        Dictionary sector_times;
-        if (all_sector_times.count(i)) {
-            sector_times = all_sector_times[i];
+        int stats_sec_idx = lap.currentSectorIndex.empty() ? 0 : lap.currentSectorIndex[0];
+        for (size_t j = 0; j < lap.timestamp.size(); j++) {
+            if (!lap.currentSectorIndex.empty() && lap.currentSectorIndex[j] != stats_sec_idx) {
+                if (lap.lastSectorTime[j] > 0 && lap.lastSectorTime[j] <= lap.iCurrentTime[j] + 2000) {
+                    sum.stats_sector_times[stats_sec_idx] = lap.lastSectorTime[j];
+                }
+                stats_sec_idx = lap.currentSectorIndex[j];
+            }
         }
-        float top_speed = 0.0f;
-        
+        sum.stats_end_sec_idx = stats_sec_idx;
+
         std::map<int, float> sec_vmax;
         std::map<int, float> sec_vmin;
         std::map<int, float> sec_speed_sum;
@@ -1126,7 +1164,7 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
 
         for (size_t j = 0; j < lap.speedKmh.size(); j++) {
             int loop_sec_idx = lap.currentSectorIndex.empty() ? 0 : lap.currentSectorIndex[j];
-            
+
             float speed = lap.speedKmh[j];
             float gas = j < lap.gas.size() ? lap.gas[j] : 0.0f;
             float brake = j < lap.brake.size() ? lap.brake[j] : 0.0f;
@@ -1144,128 +1182,196 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
             if (speed < sec_vmin[loop_sec_idx]) sec_vmin[loop_sec_idx] = speed;
             sec_speed_sum[loop_sec_idx] += speed;
             sec_snapshot_count[loop_sec_idx]++;
-            
+
             if (gas > 0.05f) sec_throttle_count[loop_sec_idx]++;
             if (brake > 0.05f) sec_brake_count[loop_sec_idx]++;
 
-            if (speed > top_speed) {
-                top_speed = speed;
+            if (speed > sum.top_speed) {
+                sum.top_speed = speed;
             }
         }
 
-        Dictionary sectors_data;
         for (const auto& pair : sec_snapshot_count) {
             int s_idx = pair.first;
-            int count = pair.second;
-            if (count == 0) continue;
-            
+            int cnt = pair.second;
+            if (cnt == 0) continue;
+
             Dictionary s_dict;
             s_dict["vmax_kmh"] = sec_vmax[s_idx];
             s_dict["vmin_kmh"] = sec_vmin[s_idx];
-            s_dict["avg_speed_kmh"] = sec_speed_sum[s_idx] / count;
-            s_dict["throttle_pct"] = (float)sec_throttle_count[s_idx] / count * 100.0f;
-            s_dict["brake_pct"] = (float)sec_brake_count[s_idx] / count * 100.0f;
-            
-            sectors_data[s_idx] = s_dict;
+            s_dict["avg_speed_kmh"] = sec_speed_sum[s_idx] / cnt;
+            s_dict["throttle_pct"] = (float)sec_throttle_count[s_idx] / cnt * 100.0f;
+            s_dict["brake_pct"] = (float)sec_brake_count[s_idx] / cnt * 100.0f;
+
+            sum.sectors_data[s_idx] = s_dict;
         }
-        
 
+        if (!lap.normalizedCarPosition.empty()) {
+            sum.has_positions = true;
+            sum.pos_count = lap.normalizedCarPosition.size();
+            sum.first_pos = lap.normalizedCarPosition.front();
+            sum.last_pos = lap.normalizedCarPosition.back();
 
-        bool is_completed = false;
-        if (lap.normalizedCarPosition.size() > 1) {
             float total_progression = 0.0f;
             for (size_t k = 1; k < lap.normalizedCarPosition.size(); k++) {
-                float diff = lap.normalizedCarPosition[k] - lap.normalizedCarPosition[k-1];
+                float diff = lap.normalizedCarPosition[k] - lap.normalizedCarPosition[k - 1];
                 if (diff < -0.5f) diff += 1.0f;
                 if (diff > 0.5f) diff -= 1.0f;
-                
                 if (diff > 0.0f && diff < 0.1f) {
                     total_progression += diff;
                 }
             }
-            if (total_progression > 0.85f) {
-                if (i < count - 1) {
-                    float last_pos = lap.normalizedCarPosition.back();
-                    float next_pos = laps[i + 1].normalizedCarPosition.front();
-                    // check if it wrapped around the finish line
-                    if (last_pos > 0.90f && next_pos < 0.10f) {
-                        is_completed = true;
-                    }
-                }
-            }
+            sum.total_progression = total_progression;
         }
 
-        bool is_valid = is_completed;
-        if (is_valid && !lap.isValidLap.empty() && !lap.iCurrentTime.empty()) {
-            bool found_invalid = false;
+        if (!lap.isValidLap.empty() && !lap.iCurrentTime.empty()) {
             for (size_t k = 0; k < lap.isValidLap.size(); k++) {
                 if (lap.isValidLap[k] == 0) {
-                    found_invalid = true;
+                    sum.has_invalid_flag = true;
                     break;
                 }
             }
-            if (found_invalid) {
-                is_valid = false;
-            }
-            
-            if (is_valid) {
-                size_t p_size = lap.penaltyTime.size();
-                size_t f_size = lap.flag.size();
-                size_t pit_size = lap.isInPitLane.size();
-                size_t min_size = std::min({p_size, f_size, pit_size});
-                
+            if (!sum.has_invalid_flag) {
+                size_t min_size = std::min({lap.penaltyTime.size(), lap.flag.size(), lap.isInPitLane.size()});
                 for (size_t k = 0; k < min_size; k++) {
                     if (lap.penaltyTime[k] > 0.0f || lap.flag[k] == ACC_PENALTY_FLAG || lap.isInPitLane[k] == 1) {
-                        is_valid = false;
+                        sum.has_invalid_flag = true;
                         break;
                     }
                 }
             }
         }
 
-        int next_lap_best_time = 0;
+        if (!lap.iCurrentTime.empty()) {
+            sum.has_iCurrentTime = true;
+            sum.back_iCurrentTime = lap.iCurrentTime.back();
+            int max_ct = 0;
+            for (int t : lap.iCurrentTime) {
+                if (t > max_ct && t < INT_MAX) max_ct = t;
+            }
+            sum.max_iCurrentTime = max_ct;
+        }
+
+        if (!lap.iLastTime.empty()) {
+            sum.has_iLastTime = true;
+            std::map<int, int> counts;
+            int max_cnt = 0;
+            int most_freq = 0;
+            int max_lt = 0;
+            for (int t : lap.iLastTime) {
+                if (t > max_lt) max_lt = t;
+                if (t > 0 && t < INT_MAX) {
+                    counts[t]++;
+                    if (counts[t] > max_cnt) {
+                        max_cnt = counts[t];
+                        most_freq = t;
+                    }
+                }
+            }
+            sum.most_freq_iLastTime = most_freq;
+            sum.max_iLastTime = max_lt;
+        }
+
+        if (!lap.currentSectorIndex.empty() && !lap.lastSectorTime.empty()) {
+            size_t n = std::min(lap.currentSectorIndex.size(), lap.lastSectorTime.size());
+            for (size_t k = 0; k < n; k++) {
+                if (lap.currentSectorIndex[k] == 0 && lap.lastSectorTime[k] > 0) {
+                    sum.first_sec0_last_sector_time = lap.lastSectorTime[k];
+                    break;
+                }
+            }
+        }
+
+        if (!lap.fuel.empty()) {
+            double consumed = 0.0;
+            float prev_fuel = lap.fuel[0];
+            for (size_t k = 1; k < lap.fuel.size(); k++) {
+                float current_fuel = lap.fuel[k];
+                if (current_fuel < prev_fuel) {
+                    consumed += (prev_fuel - current_fuel);
+                }
+                prev_fuel = current_fuel;
+            }
+            sum.fuel_consumed = consumed;
+        }
+
+        out_summaries.push_back(std::move(sum));
+    }
+
+    infile.close();
+    return true;
+}
+
+bool ACCProvider::_ensure_summaries_loaded() {
+    if (summaries_loaded) return true;
+    if (loaded_session_file_path.is_empty()) return false;
+
+    ACC_SPageStatic stat{};
+    double spm = 0.0;
+    uint64_t count = 0;
+    int64_t ts = 0;
+    if (!_scan_session_summaries(loaded_session_file_path, stat, spm, count, ts, loaded_lap_summaries, loaded_total_driven_laps, loaded_session_type)) {
+        return false;
+    }
+
+    summaries_loaded = true;
+    return true;
+}
+
+Dictionary ACCProvider::_build_session_metadata(const ACC_SPageStatic& stat, uint64_t count, int session_type, const std::vector<LapSummary>& summaries) const {
+    Dictionary meta;
+    double track_length = get_acc_track_length(wchar_to_gdstring(stat.track, 33).to_lower());
+
+    meta["sim_id"] = "ACC";
+    meta["track_name"] = wchar_to_gdstring(stat.track, 33).to_lower();
+    meta["track_config"] = ""; // NOTE: 'trackConfiguration' is not used by acc
+    meta["car_name"] = wchar_to_gdstring(stat.carModel, 33);
+    meta["total_laps"] = (int)count;
+    meta["sector_count"] = stat.sectorCount;
+    meta["session_type"] = session_type;
+
+    Array laps_arr;
+    int best_lap_time = 0;
+    Dictionary sector_positions_norm;
+    Dictionary sector_positions_m;
+
+    std::vector<float> boundaries = get_acc_sectors(wchar_to_gdstring(stat.track, 33).to_lower());
+    for (size_t s = 0; s < boundaries.size(); s++) {
+        sector_positions_norm[s] = boundaries[s];
+        sector_positions_m[s] = boundaries[s] * track_length;
+    }
+
+    for (size_t i = 0; i < summaries.size(); i++) {
+        const LapSummary& sum = summaries[i];
+        Dictionary lap_stats;
+        int lap_time = 0;
+        Dictionary sector_times = sum.meta_sector_times.duplicate();
+
+        bool is_completed = false;
+        if (sum.pos_count > 1 && sum.total_progression > 0.85f) {
+            if (i + 1 < summaries.size() && summaries[i + 1].has_positions) {
+                // check if it wrapped around the finish line
+                if (sum.last_pos > 0.90f && summaries[i + 1].first_pos < 0.10f) {
+                    is_completed = true;
+                }
+            }
+        }
+
+        bool is_valid = is_completed && !sum.has_invalid_flag;
+
         // try getting exact time from next lap if exists
         int real_lap_time = 0;
-        if (i + 1 < count) {
-            const ACC_LapDataChannels& next_lap = laps[i + 1];
-            
-            if (!next_lap.iBestTime.empty()) {
-                next_lap_best_time = next_lap.iBestTime[0];
-            }
+        if (i + 1 < summaries.size()) {
+            const LapSummary& next_sum = summaries[i + 1];
 
             // timing line and position wrap are often slightly offset.
             // the very first samples of next_lap might still hold the previous lap's time,
             // and the very last samples might hold next_lap's time.
             // however, the vast majority of next_lap's samples will hold this lap's true time.
             // we extract it by finding the most frequent valid iLastTime in next_lap.
-            if (!next_lap.iLastTime.empty()) {
-                std::map<int, int> counts;
-                int max_count = 0;
-                int next_most_frequent = 0;
-                for (int t : next_lap.iLastTime) {
-                    if (t > 0 && t < INT_MAX) {
-                        counts[t]++;
-                        if (counts[t] > max_count) {
-                            max_count = counts[t];
-                            next_most_frequent = t;
-                        }
-                    }
-                }
-
-                int curr_most_frequent = 0;
-                if (!lap.iLastTime.empty()) {
-                    std::map<int, int> curr_counts;
-                    int curr_max = 0;
-                    for (int t : lap.iLastTime) {
-                        if (t > 0 && t < INT_MAX) {
-                            curr_counts[t]++;
-                            if (curr_counts[t] > curr_max) {
-                                curr_max = curr_counts[t];
-                                curr_most_frequent = t;
-                            }
-                        }
-                    }
-                }
+            if (next_sum.has_iLastTime) {
+                int next_most_frequent = next_sum.most_freq_iLastTime;
+                int curr_most_frequent = sum.most_freq_iLastTime;
 
                 if (next_most_frequent > 0) {
                     // if the game didn't update iLastTime across the finish line,
@@ -1273,14 +1379,9 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
                     // however, we cross-reference with the physical elapsed time to ensure
                     // they didn't just drive the exact same millisecond.
                     if (curr_most_frequent > 0 && next_most_frequent == curr_most_frequent) {
-                        int max_current_time = 0;
-                        for (int t : lap.iCurrentTime) {
-                            if (t > max_current_time && t < INT_MAX) max_current_time = t;
-                        }
-                        
                         // if the stuck time is vastly different
                         // from the true elapsed time, it's a bug.
-                        if (std::abs(next_most_frequent - max_current_time) > 50) {
+                        if (std::abs(next_most_frequent - sum.max_iCurrentTime) > 50) {
                             is_valid = false;
                         } else {
                             real_lap_time = next_most_frequent;
@@ -1291,19 +1392,15 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
                 }
             }
         }
-        
+
         if (real_lap_time > 0) {
             lap_time = real_lap_time;
-        } else if (!lap.iCurrentTime.empty()) {
+        } else if (sum.has_iCurrentTime) {
             // fallback to max iCurrentTime value in this lap's data.
             // we can't use .back() because acc resets iCurrentTime ~25m before
             // our lap boundary (position wrap), so the last samples are near-zero.
             // max() safely captures the elapsed time before acc's internal reset.
-            int max_time = 0;
-            for (int t : lap.iCurrentTime) {
-                if (t > max_time && t < INT_MAX) max_time = t;
-            }
-            lap_time = max_time;
+            lap_time = sum.max_iCurrentTime;
         } else {
             lap_time = 0; // Invalid lap
             is_completed = false;
@@ -1325,14 +1422,14 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
                 sector_times[last_sec_idx] = lap_time - accumulated_time;
             }
         }
-        
+
         lap_stats["lap_time_ms"] = lap_time;
         lap_stats["sector_times_ms"] = sector_times;
-        lap_stats["top_speed_kmh"] = top_speed;
-        lap_stats["snapshot_count"] = (int)lap.speedKmh.size();
+        lap_stats["top_speed_kmh"] = sum.top_speed;
+        lap_stats["snapshot_count"] = sum.snapshot_count;
         lap_stats["is_completed"] = is_completed;
         lap_stats["is_valid"] = is_valid;
-        lap_stats["sectors_data"] = sectors_data;
+        lap_stats["sectors_data"] = sum.sectors_data.duplicate(true);
 
         laps_arr.push_back(lap_stats);
 
@@ -1345,14 +1442,14 @@ Dictionary ACCProvider::_calculate_session_metadata(const ACC_SPageStatic& stat,
     for (int i = 0; i < laps_arr.size(); i++) {
         Dictionary lap_dict = laps_arr[i];
         if (!lap_dict["is_completed"]) continue;
-        
+
         Dictionary sectors = lap_dict["sector_times_ms"];
         Array keys = sectors.keys();
         for (int k = 0; k < keys.size(); k++) {
             int sec_idx = keys[k];
             int time = sectors[sec_idx];
             if (time <= 0) continue;
-            
+
             if (!best_sectors_dict.has(sec_idx) || time < (int)best_sectors_dict[sec_idx]) {
                 best_sectors_dict[sec_idx] = time;
             }
@@ -2339,47 +2436,32 @@ void ACCProvider::logging_loop() {
 #pragma comment(lib, "winmm.lib")
 
 String ACCProvider::load_session(const String& file_path) {
-    loaded_session_data.clear();
-    loaded_session_lap_offsets.clear();
+    close_session();
 
     TelemetryFile infile;
     uint64_t count = 0;
-    int64_t dummy_ts;
+    int64_t dummy_ts = 0;
     String err = _open_session_file(file_path, infile, loaded_session_static_data, loaded_session_samples_per_meter, count, loaded_session_lap_offsets, dummy_ts);
-    if (!err.is_empty()) return err;
-
-    loaded_session_lap_count = count;
-
-    for (int i = 0; i < loaded_session_lap_count; ++i) {
-        ACC_LapDataChannels lap_data;
-        infile.seekg(loaded_session_lap_offsets[i]);
-        lap_data.read_from_stream(infile);
-        if (infile.fail()) {
-            return String("failed to read snapshot data for lap ") + String::num_int64(i);
-        }
-        
-        if (lap_data.speedKmh.empty()) continue;
-        
-        // compatibility for old telemetry files (before commit 'e35eb69')
-        if (!lap_data.normalizedCarPosition.empty()) {
-            float base_offset = 0.0f;
-            float prev_pos = lap_data.normalizedCarPosition[0];
-            for (size_t j = 1; j < lap_data.normalizedCarPosition.size(); ++j) {
-                float curr_pos = lap_data.normalizedCarPosition[j];
-                if (curr_pos - prev_pos < -0.5f) {
-                    base_offset += 1.0f;
-                } else if (curr_pos - prev_pos > 0.5f) {
-                    base_offset -= 1.0f;
-                }
-                prev_pos = curr_pos;
-                lap_data.normalizedCarPosition[j] = curr_pos + base_offset;
-            }
-        }
-        
-        loaded_session_data.push_back(lap_data);
+    if (!err.is_empty()) {
+        close_session();
+        return err;
     }
 
+    uint64_t logical_size = infile.get_size();
     infile.close();
+
+    loaded_session_file_path = file_path;
+    loaded_session_lap_count = (int)count;
+
+    loaded_visible_lap_offsets.reserve(count);
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t start = loaded_session_lap_offsets[i];
+        uint64_t end = (i + 1 < count) ? loaded_session_lap_offsets[i + 1] : logical_size;
+        if (end >= start && end - start > sizeof(uint64_t)) {
+            loaded_visible_lap_offsets.push_back(start);
+        }
+    }
+
     return "";
 }
 
@@ -2393,137 +2475,59 @@ Dictionary ACCProvider::get_loaded_session_static_data() {
 }
 
 double ACCProvider::get_loaded_session_lap_fuel_consumption(int lap_index) {
-    if (lap_index < 0 || lap_index >= loaded_session_data.size()) return 0.0;
-    const auto &lap = loaded_session_data[lap_index];
-    if (lap.fuel.empty()) return 0.0;
-
-    double consumed = 0.0;
-    float prev_fuel = lap.fuel[0];
-    for (size_t i = 1; i < lap.fuel.size(); i++) {
-        float current_fuel = lap.fuel[i];
-        if (current_fuel < prev_fuel) {
-            consumed += (prev_fuel - current_fuel);
-        }
-        prev_fuel = current_fuel;
-    }
-    return consumed;
+    if (!_ensure_summaries_loaded()) return 0.0;
+    if (lap_index < 0 || lap_index >= (int)loaded_lap_summaries.size()) return 0.0;
+    return loaded_lap_summaries[lap_index].fuel_consumed;
 }
 
 double ACCProvider::get_loaded_session_total_fuel_consumption() {
+    if (!_ensure_summaries_loaded()) return 0.0;
     double total = 0.0;
-    for (int i = 0; i < loaded_session_data.size(); i++) {
-        total += get_loaded_session_lap_fuel_consumption(i);
+    for (size_t i = 0; i < loaded_lap_summaries.size(); i++) {
+        total += loaded_lap_summaries[i].fuel_consumed;
     }
     return total;
 }
 
 double ACCProvider::get_loaded_session_total_laps() {
-    double total_driven_fraction = 0.0;
-    bool has_prev = false;
-    double prev_pos = 0.0;
-    
-    for (size_t i = 0; i < loaded_session_data.size(); i++) {
-        const auto &lap = loaded_session_data[i];
-        if (lap.normalizedCarPosition.empty()) continue;
-        
-        for (size_t j = 0; j < lap.normalizedCarPosition.size(); j++) {
-            double curr_pos = lap.normalizedCarPosition[j];
-            
-            if (has_prev) {
-                double diff = curr_pos - prev_pos;
-                
-                if (diff < -0.5 && prev_pos > 0.8 && curr_pos < 0.2) {
-                    diff += 1.0;
-                } else if (diff > 0.5 && prev_pos < 0.2 && curr_pos > 0.8) {
-                    diff -= 1.0;
-                }
-                
-                if (std::abs(diff) > 0.1) {
-                    diff = 0.0; // ignore large jumps
-                }
-                
-                total_driven_fraction += diff;
-            }
-            
-            prev_pos = curr_pos;
-            has_prev = true;
-        }
-    }
-    
-    return total_driven_fraction;
+    if (!_ensure_summaries_loaded()) return 0.0;
+    return loaded_total_driven_laps;
 }
 
 Dictionary ACCProvider::get_loaded_session_lap_stats(int lap_index) {
     Dictionary stats;
-    if (lap_index < 0 || lap_index >= loaded_session_data.size()) return stats;
+    if (!_ensure_summaries_loaded()) return stats;
+    if (lap_index < 0 || lap_index >= (int)loaded_lap_summaries.size()) return stats;
 
-    const auto &lap = loaded_session_data[lap_index];
-    if (lap.timestamp.empty()) return stats;
+    const auto &sum = loaded_lap_summaries[lap_index];
+    if (sum.timestamp_count == 0) return stats;
 
     int lap_time = 0;
-    Dictionary sector_times;
-    float top_speed = 0.0f;
-    int current_sec_idx = lap.currentSectorIndex[0];
-
-    for (size_t i = 0; i < lap.timestamp.size(); i++) {
-        // detect sector change
-        if (lap.currentSectorIndex[i] != current_sec_idx) {
-            if (lap.lastSectorTime[i] > 0 && lap.lastSectorTime[i] <= lap.iCurrentTime[i] + 2000) {
-                sector_times[current_sec_idx] = lap.lastSectorTime[i];
-            }
-            current_sec_idx = lap.currentSectorIndex[i];
-        }
-
-        if (lap.speedKmh[i] > top_speed) {
-            top_speed = lap.speedKmh[i];
-        }
-    }
-
-    bool is_completed = false;
-    if (lap.normalizedCarPosition.size() > 1) {
-        float total_progression = 0.0f;
-        for (size_t k = 1; k < lap.normalizedCarPosition.size(); k++) {
-            float diff = lap.normalizedCarPosition[k] - lap.normalizedCarPosition[k-1];
-            if (diff < -0.5f) diff += 1.0f;
-            if (diff > 0.5f) diff -= 1.0f;
-            
-            if (diff > 0.0f && diff < 0.1f) {
-                total_progression += diff;
-            }
-        }
-        if (total_progression > 0.90f) {
-            is_completed = true;
-        }
-    }
+    Dictionary sector_times = sum.stats_sector_times.duplicate();
+    bool is_completed = sum.pos_count > 1 && sum.total_progression > 0.90f;
 
     // try to get the exact lap_time and final sector time from the next lap
-    if (is_completed && lap_index + 1 < loaded_session_data.size() && !loaded_session_data[lap_index + 1].timestamp.empty()) {
-        const auto &next_lap = loaded_session_data[lap_index + 1];
-        
-        lap_time = 0;
-        for (int t : next_lap.iLastTime) {
-            if (t > lap_time) lap_time = t;
+    if (is_completed && lap_index + 1 < (int)loaded_lap_summaries.size() && loaded_lap_summaries[lap_index + 1].timestamp_count > 0) {
+        const auto &next_sum = loaded_lap_summaries[lap_index + 1];
+
+        lap_time = next_sum.max_iLastTime;
+        if (lap_time == 0 && sum.has_iCurrentTime) {
+            lap_time = sum.back_iCurrentTime;
         }
-        if (lap_time == 0 && !lap.iCurrentTime.empty()) {
-            lap_time = lap.iCurrentTime.back();
-        }
-        
-        for (size_t k = 0; k < next_lap.currentSectorIndex.size(); k++) {
-            if (next_lap.currentSectorIndex[k] == 0 && next_lap.lastSectorTime[k] > 0) {
-                sector_times[current_sec_idx] = next_lap.lastSectorTime[k];
-                break;
-            }
+
+        if (next_sum.first_sec0_last_sector_time > 0) {
+            sector_times[sum.stats_end_sec_idx] = next_sum.first_sec0_last_sector_time;
         }
     } else {
-        lap_time = lap.iCurrentTime.empty() ? 0 : lap.iCurrentTime.back();
+        lap_time = sum.has_iCurrentTime ? sum.back_iCurrentTime : 0;
     }
 
     stats["lap_time_ms"] = lap_time;
     stats["sector_times_ms"] = sector_times;
-    stats["top_speed_kmh"] = top_speed;
-    stats["snapshot_count"] = (int)lap.timestamp.size();
+    stats["top_speed_kmh"] = sum.top_speed;
+    stats["snapshot_count"] = sum.timestamp_count;
     stats["is_completed"] = is_completed;
-    
+
     return stats;
 }
 

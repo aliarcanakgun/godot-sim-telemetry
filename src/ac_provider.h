@@ -41,12 +41,48 @@ private:
     // data
     std::vector<AC_LapDataChannels> sessions_data;
     
-    // loaded session data
-    std::vector<AC_LapDataChannels> loaded_session_data;
-    AC_SPageStatic loaded_session_static_data;
+    // loaded session state
+    struct LapSummary {
+        int snapshot_count = 0;
+        int timestamp_count = 0;
+        bool has_positions = false;
+        size_t pos_count = 0;
+        float first_pos = 0.0f;
+        float last_pos = 0.0f;
+        float total_progression = 0.0f;
+        float top_speed = 0.0f;
+        int end_sec_idx = 0;
+        Dictionary sector_times;
+        Dictionary sectors_data;
+        bool has_penalty_or_offtrack = false;
+        bool has_iCurrentTime = false;
+        int max_iCurrentTime = 0;
+        int back_iCurrentTime = 0;
+        bool has_iLastTime = false;
+        int most_freq_iLastTime = 0;
+        int max_iLastTime = 0;
+        bool has_iBestTime = false;
+        int first_iBestTime = 0;
+        int first_sec0_last_sector_time = 0;
+        double fuel_consumed = 0.0;
+    };
+
+    String loaded_session_file_path = "";
+    AC_SPageStatic loaded_session_static_data{};
     double loaded_session_samples_per_meter = 0.0;
     int loaded_session_lap_count = -1;
     std::vector<uint64_t> loaded_session_lap_offsets;
+    std::vector<uint64_t> loaded_visible_lap_offsets;
+
+    bool summaries_loaded = false;
+    std::vector<LapSummary> loaded_lap_summaries;
+    Dictionary loaded_sector_positions_norm;
+    Dictionary loaded_sector_positions_m;
+    double loaded_total_driven_laps = 0.0;
+    int loaded_session_type = -1;
+
+    int cached_lap_index = -1;
+    AC_LapDataChannels cached_lap;
 
     std::function<void(godot::String)> auto_save_callback;
 
@@ -61,7 +97,10 @@ private:
 
     void logging_loop();
     String _open_session_file(const String& file_path, TelemetryFile& infile, AC_SPageStatic& out_static, double& out_samples_per_meter, uint64_t& out_lap_count, std::vector<uint64_t>& out_lap_offsets, int64_t& out_timestamp);
-    Dictionary _calculate_session_metadata(const AC_SPageStatic& stat, uint64_t count, const std::vector<AC_LapDataChannels>& laps);
+    void _unwrap_lap_positions(AC_LapDataChannels& lap) const;
+    bool _scan_session_summaries(const String& file_path, AC_SPageStatic& out_static, double& out_spm, uint64_t& out_lap_count, int64_t& out_timestamp, std::vector<LapSummary>& out_summaries, Dictionary& out_sec_norm, Dictionary& out_sec_m, double& out_total_driven, int& out_session_type);
+    bool _ensure_summaries_loaded();
+    Dictionary _build_session_metadata(const AC_SPageStatic& stat, uint64_t count, int session_type, const std::vector<LapSummary>& summaries, const Dictionary& sector_positions_norm, const Dictionary& sector_positions_m) const;
     Dictionary _static_to_dict(const AC_SPageStatic &s);
     Dictionary _lap_to_dict(const AC_LapDataChannels& c);
 
