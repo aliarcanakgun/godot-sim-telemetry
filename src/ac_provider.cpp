@@ -257,7 +257,9 @@ void ACProvider::_flush_sessions_to_disk(std::vector<AC_LapDataChannels> data_to
     for (uint64_t idx = 0; idx < data_to_save.size(); ++idx) {
         lap_offsets[idx] = outfile.tellp();
         data_to_save[idx].write_to_stream(outfile);
+        data_to_save[idx] = AC_LapDataChannels();
     }
+    std::vector<AC_LapDataChannels>().swap(data_to_save);
 
     outfile.seekp(offsets_pos);
     outfile.write(lap_offsets.data(), total_laps * sizeof(uint64_t));

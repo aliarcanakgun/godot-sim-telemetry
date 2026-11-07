@@ -11,7 +11,7 @@ struct ZSTD_DCtx_s;
 
 class TelemetryFile {
 private:
-    // used by compress/uncompress helpers
+    // write mode buffer
     std::vector<uint8_t> buffer;
     uint64_t rw_pos = 0;
     bool is_writing = false;
@@ -37,7 +37,6 @@ private:
 
     static constexpr uint64_t COMPRESSED_HEADER_SIZE = 16; // sig(4) + "ZST2"(4) + u64 size(8)
 
-    bool open_read_full(const godot::String& path);
     void close_stream();
     bool stream_read(void* dst, uint64_t size);
     bool stream_rewind();
