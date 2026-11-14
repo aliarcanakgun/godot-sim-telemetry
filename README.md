@@ -9,7 +9,7 @@
 * Then, clone the repository using:
 ```bash
 git clone --recurse-submodules https://github.com/aliarcanakgun/godot-sim-telemetry.git
-cd godot-ac-telemetry
+cd godot-sim-telemetry
 ```
 * Finally, in the root folder, use the commands below to build the extension (godot-cpp will be compiled with the first build):
 ```bash
